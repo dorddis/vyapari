@@ -1,4 +1,4 @@
-"""Relay session lifecycle tests — 8 scenarios."""
+"""Relay session lifecycle tests — 9 scenarios."""
 
 import pytest
 
@@ -72,6 +72,26 @@ async def test_forward_to_customer_stores_message():
     owner_msgs = [m for m in messages if m.role == MessageRole.OWNER]
     assert len(owner_msgs) == 1
     assert owner_msgs[0].content == "8.75L final hai"
+
+
+@pytest.mark.asyncio
+async def test_forward_to_customer_dedupes_rapid_identical_messages():
+    await seed_owner()
+    await seed_customer()
+    await open_relay("919999888777", "919876543210")
+
+    customer_wa_id, text = await forward_to_customer("919999888777", "8.75L final hai")
+    assert customer_wa_id == "919876543210"
+    assert text == "8.75L final hai"
+
+    customer_wa_id_2, text_2 = await forward_to_customer("919999888777", "8.75L final hai")
+    assert customer_wa_id_2 is None
+    assert "duplicate" in text_2.lower()
+
+    conv = await state.get_conversation("919876543210")
+    messages = await state.get_messages(conv.id)
+    owner_msgs = [m for m in messages if m.role == MessageRole.OWNER]
+    assert len(owner_msgs) == 1
 
 
 @pytest.mark.asyncio

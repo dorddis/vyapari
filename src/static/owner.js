@@ -21,6 +21,7 @@
   var activeCustomerId = null;
   var activeTab = "convos";
   var ownerLastMsgId = null;
+  var ownerSending = false;
 
   // --- Helpers ---
 
@@ -237,12 +238,16 @@
   // --- Owner send (hijack) + /done command ---
 
   async function ownerSend() {
+    if (ownerSending) return;
+
     var text = ownerInputEl.value.trim();
     if (!text || !activeCustomerId) return;
     ownerInputEl.value = "";
 
     // /done command = release to bot
     if (text.toLowerCase() === "/done") {
+      ownerSending = true;
+      ownerSendBtn.disabled = true;
       try {
         await fetch("/api/owner/release", {
           method: "POST",
@@ -256,6 +261,10 @@
         ownerMessagesEl.appendChild(sys);
         scrollDown(ownerMessagesEl);
       } catch (err) { /* silent */ }
+      finally {
+        ownerSending = false;
+        ownerSendBtn.disabled = false;
+      }
       return;
     }
 
@@ -265,6 +274,8 @@
     );
     scrollDown(ownerMessagesEl);
 
+    ownerSending = true;
+    ownerSendBtn.disabled = true;
     try {
       var resp = await fetch("/api/owner/send", {
         method: "POST",
@@ -279,6 +290,10 @@
         addOwnerHint("You're now talking directly. Customer sees your messages. Type /done when finished.");
       }
     } catch (err) { /* silent */ }
+    finally {
+      ownerSending = false;
+      ownerSendBtn.disabled = false;
+    }
   }
 
   ownerSendBtn.addEventListener("click", ownerSend);

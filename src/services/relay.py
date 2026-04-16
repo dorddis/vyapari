@@ -7,12 +7,26 @@ Handles the owner/SDR <-> customer relay lifecycle:
 - Session summary generation
 """
 
+import asyncio
+from datetime import datetime, timezone
+
 import state
 from models import (
     ConversationState,
     MessageRole,
     RelaySessionRecord,
 )
+
+_RELAY_FORWARD_LOCKS: dict[str, asyncio.Lock] = {}
+_DUPLICATE_RELAY_WINDOW_SECONDS = 2.0
+
+
+def _get_relay_forward_lock(conversation_id: str) -> asyncio.Lock:
+    lock = _RELAY_FORWARD_LOCKS.get(conversation_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _RELAY_FORWARD_LOCKS[conversation_id] = lock
+    return lock
 
 
 # ---------------------------------------------------------------------------
@@ -104,15 +118,34 @@ async def forward_to_customer(
     if not session:
         return None, "No active relay session."
 
+    lock = _get_relay_forward_lock(session.conversation_id)
+
     # Store message in conversation history
     staff = await state.get_staff(staff_wa_id)
     role = MessageRole.OWNER if staff and staff.role.value == "owner" else MessageRole.SDR
 
-    await state.add_message(
-        conversation_id=session.conversation_id,
-        role=role,
-        content=text,
-    )
+    normalized_text = text.strip()
+    async with lock:
+        last_messages = await state.get_messages(session.conversation_id, limit=1)
+        if last_messages:
+            last = last_messages[-1]
+            duplicate_window = (
+                datetime.now(timezone.utc) - last.timestamp
+            ).total_seconds()
+            if (
+                last.role == role
+                and last.content.strip() == normalized_text
+                and duplicate_window <= _DUPLICATE_RELAY_WINDOW_SECONDS
+            ):
+                # Ignore rapid duplicate sends from UI race/double-submit.
+                await state.update_relay_last_active(staff_wa_id)
+                return None, "Duplicate relay message ignored."
+
+        await state.add_message(
+            conversation_id=session.conversation_id,
+            role=role,
+            content=text,
+        )
 
     # Update relay activity
     await state.update_relay_last_active(staff_wa_id)

@@ -16,6 +16,7 @@ if str(SRC_DIR) not in sys.path:
 import state
 from channels.base import get_channel
 from channels.web_clone.adapter import WebCloneAdapter
+from catalogue import search_cars
 from models import ConversationState, IncomingMessage, MessageType
 from router import dispatch
 from services.message_log import (
@@ -59,6 +60,25 @@ def _require_web_clone() -> WebCloneAdapter:
     return channel
 
 
+def _to_catalogue_card(car: dict[str, object]) -> dict[str, object]:
+    image_url = car.get("image_url")
+    images = car.get("images")
+    if not image_url and isinstance(images, list) and images:
+        image_url = images[0]
+
+    return {
+        "id": car.get("id"),
+        "title": (
+            f"{car.get('year')} {car.get('make')} {car.get('model')} {car.get('variant')}"
+        ).replace("  ", " ").strip(),
+        "fuel_type": car.get("fuel_type"),
+        "transmission": car.get("transmission"),
+        "km_driven": car.get("km_driven"),
+        "price_lakhs": car.get("price_lakhs"),
+        "image_url": image_url,
+    }
+
+
 @router.post("/chat")
 async def customer_chat(req: ChatRequest) -> dict[str, object]:
     """Dispatch a demo message through the real backend and log to DB."""
@@ -89,6 +109,20 @@ async def conversation_messages(customer_id: str) -> dict[str, object]:
         "customer_id": customer_id,
         "mode": _to_ui_mode(mode),
         "messages": messages,
+    }
+
+
+@router.get("/catalogue")
+async def catalogue(limit: int = 8, max_price: float | None = None) -> dict[str, object]:
+    """Return compact catalogue cards for the demo frontend."""
+    _require_web_clone()
+    clamped_limit = max(1, min(limit, 20))
+    cars = search_cars(max_price=max_price)
+    available = [car for car in cars if not car.get("sold")]
+    available.sort(key=lambda car: float(car.get("price_lakhs", 0)))
+    return {
+        "cars": [_to_catalogue_card(car) for car in available[:clamped_limit]],
+        "total_matches": len(available),
     }
 
 

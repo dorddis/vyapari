@@ -6,11 +6,16 @@
   const prechatScreen = document.getElementById("prechat-screen");
   const chatScreen = document.getElementById("chat-screen");
   const prechatBtn = document.getElementById("prechat-start");
+  const customerHeader = document.getElementById("customer-header");
+  const customerProfile = document.getElementById("customer-profile");
+  const customerProfileBack = document.getElementById("customer-profile-back");
 
   const messagesEl = document.getElementById("customer-messages");
   const inputEl = document.getElementById("customer-input");
   const sendBtn = document.getElementById("customer-send");
   const statusEl = document.getElementById("customer-status");
+  const profileViewCatalogueBtn = document.getElementById("profile-view-catalogue");
+  const profileBudgetCatalogueBtn = document.getElementById("profile-budget-catalogue");
 
   let lastMessageId = null;
   let sending = false;
@@ -108,14 +113,135 @@
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
-  // --- Pre-chat → Chat transition ---
-
-  prechatBtn.addEventListener("click", function () {
+  function openChat() {
     prechatScreen.style.display = "none";
     chatScreen.style.display = "flex";
     chatScreen.classList.remove("hidden");
+    if (customerProfile) {
+      customerProfile.classList.add("hidden");
+      customerProfile.setAttribute("aria-hidden", "true");
+    }
     startChat();
-  });
+  }
+
+  function openProfile() {
+    if (!chatStarted) {
+      openChat();
+    }
+    customerProfile.classList.remove("hidden");
+    customerProfile.setAttribute("aria-hidden", "false");
+  }
+
+  function closeProfile() {
+    customerProfile.classList.add("hidden");
+    customerProfile.setAttribute("aria-hidden", "true");
+  }
+
+  function addCatalogueCards(title, cars) {
+    var block = document.createElement("div");
+    block.className = "catalogue-block";
+
+    var heading = document.createElement("div");
+    heading.className = "catalogue-title";
+    heading.textContent = title;
+    block.appendChild(heading);
+
+    var list = document.createElement("div");
+    list.className = "catalogue-list";
+
+    cars.forEach(function (car) {
+      var card = document.createElement("div");
+      card.className = "catalogue-card";
+
+      if (car.image_url) {
+        var img = document.createElement("img");
+        img.src = car.image_url;
+        img.loading = "lazy";
+        img.onerror = function () { this.style.display = "none"; };
+        card.appendChild(img);
+      }
+
+      var body = document.createElement("div");
+      body.className = "catalogue-card-body";
+
+      var titleEl = document.createElement("div");
+      titleEl.className = "catalogue-card-title";
+      titleEl.textContent = car.title || ((car.make || "") + " " + (car.model || "")).trim();
+      body.appendChild(titleEl);
+
+      var metaEl = document.createElement("div");
+      metaEl.className = "catalogue-card-meta";
+      metaEl.textContent = (car.fuel_type || "") + " · " + (car.transmission || "") + " · " +
+        (Number(car.km_driven || 0).toLocaleString() + " km");
+      body.appendChild(metaEl);
+
+      var priceEl = document.createElement("div");
+      priceEl.className = "catalogue-card-price";
+      priceEl.textContent = "Rs " + car.price_lakhs + "L";
+      body.appendChild(priceEl);
+
+      var askBtn = document.createElement("button");
+      askBtn.type = "button";
+      askBtn.textContent = "Ask details";
+      askBtn.addEventListener("click", function () {
+        var carName = car.title || ((car.make || "") + " " + (car.model || "")).trim();
+        var carId = car.id ? " (ID " + car.id + ")" : "";
+        inputEl.value = "Share full details for " + carName + carId;
+        inputEl.focus();
+      });
+      body.appendChild(askBtn);
+
+      card.appendChild(body);
+      list.appendChild(card);
+    });
+
+    block.appendChild(list);
+    messagesEl.appendChild(block);
+    scrollDown();
+  }
+
+  async function showCatalogue(options) {
+    var title = options && options.title ? options.title : "Catalogue";
+    var query = new URLSearchParams({ limit: "8" });
+
+    if (options && options.maxPrice != null) query.set("max_price", String(options.maxPrice));
+    if (options && options.minPrice != null) query.set("min_price", String(options.minPrice));
+    if (options && options.fuelType) query.set("fuel_type", options.fuelType);
+    if (options && options.make) query.set("make", options.make);
+    if (options && options.transmission) query.set("transmission", options.transmission);
+
+    statusEl.textContent = "fetching catalogue...";
+    try {
+      var resp = await fetch("/api/catalogue?" + query.toString(), { headers: getApiHeaders(false) });
+      if (!resp.ok) throw new Error("catalogue fetch failed");
+      var data = await resp.json();
+      if (!data.cars || data.cars.length === 0) {
+        addSystemMessage("No cars found for this filter.");
+      } else {
+        addCatalogueCards(title, data.cars);
+      }
+    } catch (err) {
+      addSystemMessage("Could not load catalogue right now.");
+    } finally {
+      statusEl.textContent = "online";
+    }
+  }
+
+  // --- Pre-chat → Chat transition ---
+
+  prechatBtn.addEventListener("click", openChat);
+  if (customerHeader) {
+    customerHeader.addEventListener("click", openProfile);
+    customerHeader.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        openProfile();
+      }
+    });
+  }
+  if (customerProfileBack) {
+    customerProfileBack.addEventListener("click", closeProfile);
+  }
 
   function startChat() {
     if (chatStarted) return;
@@ -171,6 +297,7 @@
           customer_name: "Customer (from Creta video)",
         }),
       });
+      if (!resp.ok) throw new Error("chat request failed");
       var data = await resp.json();
 
       removeTypingIndicator();
@@ -180,9 +307,14 @@
         messagesEl.appendChild(
           createBubble("bot", data.reply, new Date().toISOString(), data.images || [], data.is_escalation)
         );
-        if (data.is_escalation) {
-          addSystemMessage("Connecting you with our team...", "escalation-alert");
-        }
+      }
+
+      if (data.mode === "owner") {
+        addSystemMessage("Our team is replying directly now. Their message will appear here.");
+      } else if (data.is_escalation) {
+        addSystemMessage("Connecting you with our team...", "escalation-alert");
+      } else if (!data.reply) {
+        addSystemMessage("Please wait a moment while we process that.");
       }
       scrollDown();
     } catch (err) {
@@ -206,7 +338,7 @@
 
       if (data.messages && data.messages.length > 0) {
         data.messages.forEach(function (msg) {
-          if (msg.role === "owner") {
+          if (msg.role === "owner" || msg.role === "sdr") {
             messagesEl.appendChild(createBubble("bot", msg.text, msg.timestamp, msg.images || [], false));
             scrollDown();
           }
@@ -222,4 +354,16 @@
   inputEl.addEventListener("keydown", function (e) {
     if (e.key === "Enter") sendMessage();
   });
+  if (profileViewCatalogueBtn) {
+    profileViewCatalogueBtn.addEventListener("click", function () {
+      closeProfile();
+      void showCatalogue({ title: "Live Catalogue" });
+    });
+  }
+  if (profileBudgetCatalogueBtn) {
+    profileBudgetCatalogueBtn.addEventListener("click", function () {
+      closeProfile();
+      void showCatalogue({ maxPrice: 8, title: "Cars Under Rs 8L" });
+    });
+  }
 })();

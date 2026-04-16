@@ -9,9 +9,10 @@ from __future__ import annotations
 import hmac
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
+from catalogue import search_cars
 import config
 import state
 from channels.base import get_channel
@@ -88,6 +89,34 @@ def _to_ui_mode(state_value: ConversationState) -> str:
     return "bot"
 
 
+def _to_catalogue_card(car: dict[str, object]) -> dict[str, object]:
+    """Convert raw catalogue row into compact UI card payload."""
+    images = car.get("images")
+    image_url = car.get("image_url")
+    if not image_url and isinstance(images, list) and images:
+        image_url = images[0]
+
+    return {
+        "id": car.get("id"),
+        "title": (
+            f"{car.get('year')} {car.get('make')} {car.get('model')} {car.get('variant')}"
+        ).replace("  ", " ").strip(),
+        "make": car.get("make"),
+        "model": car.get("model"),
+        "variant": car.get("variant"),
+        "year": car.get("year"),
+        "fuel_type": car.get("fuel_type"),
+        "transmission": car.get("transmission"),
+        "km_driven": car.get("km_driven"),
+        "num_owners": car.get("num_owners"),
+        "price_lakhs": car.get("price_lakhs"),
+        "condition": car.get("condition"),
+        "color": car.get("color"),
+        "highlights": car.get("highlights") or [],
+        "image_url": image_url,
+    }
+
+
 @router.post("/chat")
 async def customer_chat(req: ChatRequest, request: Request) -> dict[str, object]:
     """Customer sends a message through web clone."""
@@ -144,6 +173,38 @@ async def get_conversations(request: Request) -> dict[str, object]:
         conversation["mode"] = _to_ui_mode(conv_state)
         conversation["has_escalation"] = conv_state == ConversationState.ESCALATED
     return {"conversations": conversations}
+
+
+@router.get("/catalogue")
+async def get_catalogue(
+    request: Request,
+    limit: int = Query(default=8, ge=1, le=20),
+    max_price: float | None = Query(default=None, ge=0),
+    min_price: float | None = Query(default=None, ge=0),
+    fuel_type: str | None = Query(default=None, max_length=32),
+    make: str | None = Query(default=None, max_length=64),
+    transmission: str | None = Query(default=None, max_length=32),
+) -> dict[str, object]:
+    """Return catalogue items for WhatsApp web frontend."""
+    _require_api_auth(request)
+    _require_web_clone()
+
+    results = search_cars(
+        max_price=max_price,
+        min_price=min_price,
+        fuel_type=fuel_type,
+        make=make,
+        transmission=transmission,
+    )
+    available = [car for car in results if not car.get("sold")]
+    available.sort(key=lambda car: float(car.get("price_lakhs", 0)))
+    cards = [_to_catalogue_card(car) for car in available[:limit]]
+
+    return {
+        "cars": cards,
+        "count": len(cards),
+        "total_matches": len(available),
+    }
 
 
 @router.post("/owner/send")
