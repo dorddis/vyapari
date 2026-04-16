@@ -18,16 +18,12 @@ import config
 log = logging.getLogger("vyapari.services.image_store")
 
 # Supabase Storage config
-_SUPABASE_URL = os.getenv(
-    "SUPABASE_URL",
-    "https://mhxpcsylxicnzujgtepa.supabase.co",
-)
-_SUPABASE_SERVICE_KEY = os.getenv(
-    "SUPABASE_SERVICE_KEY",
-    "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1oeHBjc3lseGljbnp1amd0ZXBhIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc3NjMyMzQ1NywiZXhwIjoyMDkxODk5NDU3fQ.euQeE2FGiIxP3BnICFCOnmQ_3M1ky-LPRnOuxOA3YHk",
-)
+_SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+_SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
 _BUCKET = "images"
-_USE_SUPABASE = bool(_SUPABASE_URL and _SUPABASE_SERVICE_KEY)
+# In development, always use local storage to avoid polluting shared bucket
+_IS_DEV = os.getenv("APP_ENV", "development") == "development"
+_USE_SUPABASE = bool(_SUPABASE_URL and _SUPABASE_SERVICE_KEY) and not _IS_DEV
 
 # Local fallback
 _LOCAL_UPLOAD_DIR = config.BASE_DIR / "uploads"

@@ -47,14 +47,18 @@ DATABASE_POOL_SIZE = int(os.getenv("DATABASE_POOL_SIZE", "10"))
 DATABASE_MAX_OVERFLOW = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
 
 # Priority: DATABASE_URL > SUPABASE_DB_URL > local SQLite
-if not DATABASE_URL and SUPABASE_DB_URL:
-    # Convert postgresql:// to postgresql+asyncpg:// for SQLAlchemy async
+# In development, ALWAYS use local SQLite to avoid polluting shared DB
+_sqlite_path = BASE_DIR / "vyapari.db"
+_LOCAL_DB_URL = f"sqlite+aiosqlite:///{_sqlite_path}"
+
+if os.getenv("APP_ENV", "development") == "development":
+    DATABASE_URL = _LOCAL_DB_URL
+elif not DATABASE_URL and SUPABASE_DB_URL:
     DATABASE_URL = SUPABASE_DB_URL.replace(
         "postgresql://", "postgresql+asyncpg://"
     )
-if not DATABASE_URL:
-    _sqlite_path = BASE_DIR / "vyapari.db"
-    DATABASE_URL = f"sqlite+aiosqlite:///{_sqlite_path}"
+elif not DATABASE_URL:
+    DATABASE_URL = _LOCAL_DB_URL
 
 # ---------------------------------------------------------------------------
 # Channel (WhatsApp vs Web Clone fallback)
