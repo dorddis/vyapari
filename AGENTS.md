@@ -14,7 +14,7 @@ Team: Low Cortisol Gang (4 members).
 - **No OpenClaw.** Team vetoed.
 
 ## Tech Stack
-- Python 3.11+
+- Python 3.13.5
 - FastAPI + uvicorn
 - PostgreSQL (asyncpg or SQLAlchemy async)
 - OpenAI Agents SDK / LangGraph
