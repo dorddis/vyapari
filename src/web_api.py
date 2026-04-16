@@ -221,38 +221,45 @@ async def get_catalogue():
 # Image upload (for vision tools)
 # ---------------------------------------------------------------------------
 
-# In-memory image store for the web clone demo
-_uploaded_images: dict[str, str] = {}  # image_id -> base64 data URL
-
-
 @router.post("/upload-image")
-async def upload_image(
+async def upload_image_endpoint(
     wa_id: str = Form(...),
     message: str = Form(""),
     file: UploadFile = File(...),
 ):
-    """Upload an image and process it through the agent.
+    """Upload an image, store it persistently, and process through the agent.
 
-    The image is stored as a base64 data URL and passed to the agent
-    via the IncomingMessage.media_url field. The agent's vision tools
-    will use this URL to analyze the image.
+    Image is stored to Supabase Storage (public URL) and passed to the
+    agent for vision analysis. The URL is also saved in message history
+    so conversation replay can show the image.
     """
+    from services.image_store import upload_image as store_image
+
     contents = await file.read()
     mime = file.content_type or "image/jpeg"
-    b64 = base64.b64encode(contents).decode("utf-8")
-    data_url = f"data:{mime};base64,{b64}"
 
-    # Store for retrieval
-    image_id = f"img_{uuid4().hex[:12]}"
-    _uploaded_images[image_id] = data_url
+    # Determine folder based on context
+    staff = await state.get_staff(wa_id)
+    if staff:
+        folder = "token_proofs" if "token" in (message or "").lower() or "payment" in (message or "").lower() else "inventory"
+    else:
+        folder = "customer_uploads"
 
-    # Create an IncomingMessage with the image
+    # Store persistently and get public URL
+    image_url = await store_image(
+        image_bytes=contents,
+        filename=f"{uuid4().hex[:12]}_{file.filename or 'upload.jpg'}",
+        folder=folder,
+        content_type=mime,
+    )
+
+    # Create an IncomingMessage with the stored image URL
     msg = IncomingMessage(
         wa_id=wa_id,
         text=message or f"[Image: {file.filename or 'uploaded'}]",
         msg_id=f"web_{uuid4().hex[:16]}",
         msg_type=MessageType.IMAGE,
-        media_url=data_url,
+        media_url=image_url,
         sender_name=None,
     )
 
@@ -262,6 +269,6 @@ async def upload_image(
     return {
         "reply": reply,
         "messages": pending,
-        "image_id": image_id,
+        "image_url": image_url,
         "wa_id": wa_id,
     }

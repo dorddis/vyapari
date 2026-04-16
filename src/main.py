@@ -9,8 +9,11 @@ Entry point for the Vyapari Agent. Integrates:
 """
 
 import asyncio
+import hashlib
+import hmac
 import logging
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 from fastapi import BackgroundTasks, FastAPI, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -95,7 +98,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=config.CORS_ALLOW_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -114,6 +117,11 @@ async def serve_frontend():
 
 app.mount("/static", StaticFiles(directory=str(config.STATIC_DIR)), name="static")
 
+# Serve locally uploaded images (fallback when Supabase unavailable)
+_uploads_dir = config.BASE_DIR / "uploads"
+_uploads_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
+
 
 # ---------------------------------------------------------------------------
 # WhatsApp webhook
@@ -126,11 +134,30 @@ async def verify_webhook(
     hub_challenge: str = Query(None, alias="hub.challenge"),
 ):
     """Meta webhook verification (GET request during setup)."""
+    if not config.WHATSAPP_VERIFY_TOKEN:
+        log.error("Webhook verify token not configured (WHATSAPP_VERIFY_TOKEN).")
+        return Response(content="Webhook verify token is not configured", status_code=503)
+
     if hub_mode == "subscribe" and hub_verify_token == config.WHATSAPP_VERIFY_TOKEN:
         log.info("Webhook verified")
         return Response(content=hub_challenge, media_type="text/plain")
     log.warning("Webhook verification failed")
     return Response(content="Forbidden", status_code=403)
+
+
+def _is_valid_whatsapp_signature(raw_body: bytes, signature_header: str | None) -> bool:
+    """Verify X-Hub-Signature-256 against META_APP_SECRET."""
+    if not signature_header:
+        return False
+    if not signature_header.startswith("sha256="):
+        return False
+    provided = signature_header.split("=", 1)[1].strip()
+    digest = hmac.new(
+        key=config.META_APP_SECRET.encode("utf-8"),
+        msg=raw_body,
+        digestmod=hashlib.sha256,
+    ).hexdigest()
+    return hmac.compare_digest(provided, digest)
 
 
 @app.post("/webhook")
@@ -139,9 +166,17 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
 
     Returns 200 immediately (WhatsApp requirement), processes async.
     """
-    payload = await request.json()
+    raw_body = await request.body()
+    if config.WHATSAPP_ENABLED:
+        if not config.META_APP_SECRET:
+            log.error("META_APP_SECRET is required when WHATSAPP_ENABLED=true")
+            return Response(content="Webhook signature not configured", status_code=503)
+        signature = request.headers.get("X-Hub-Signature-256")
+        if not _is_valid_whatsapp_signature(raw_body, signature):
+            log.warning("Webhook signature verification failed")
+            return Response(content="Forbidden", status_code=403)
 
-    # TODO: HMAC signature verification (META_APP_SECRET)
+    payload = await request.json()
 
     channel = get_channel()
     msg = channel.extract_message(payload)
@@ -188,9 +223,7 @@ async def _process_and_reply(msg: IncomingMessage):
 async def health():
     return {
         "status": "healthy",
-        "channel": config.CHANNEL_MODE,
-        "llm": config.OPENAI_MAIN_MODEL if config.USE_OPENAI else config.GEMINI_MODEL,
-        "owner": config.DEFAULT_OWNER_NAME,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
 
