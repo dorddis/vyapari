@@ -12,6 +12,14 @@ import pytest_asyncio
 # Add src to path so imports work
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+# Force SQLite for tests BEFORE any other imports touch the DB
+import config
+import database
+config.DATABASE_URL = "sqlite+aiosqlite://"  # in-memory SQLite
+database._engine = None
+database._async_session = None
+
+from catalogue import reset_runtime_data
 import state
 from models import (
     ConversationState,
@@ -24,15 +32,46 @@ from models import (
 
 
 # ---------------------------------------------------------------------------
+# DB setup (once per session)
+# ---------------------------------------------------------------------------
+
+@pytest_asyncio.fixture(autouse=True, scope="session")
+async def _init_test_db():
+    """Create all tables in in-memory SQLite once for the test session."""
+    await database.init_db()
+    yield
+    await database.close_db()
+
+
+# ---------------------------------------------------------------------------
 # Auto-reset state before each test
 # ---------------------------------------------------------------------------
 
 @pytest_asyncio.fixture(autouse=True)
 async def clean_state():
-    """Reset all in-memory state before each test."""
+    """Reset all DB state before each test.
+
+    Does NOT seed the default owner — tests that need one call seed_owner()
+    explicitly (avoids conflict with tests using 919876543210 as customer).
+    """
     await state.reset_state()
+    # Only seed the business row (needed for FK constraints), not the owner
+    async with database.get_session_factory()() as s:
+        import db_models as M
+        biz = await s.get(M.Business, config.DEFAULT_BUSINESS_ID)
+        if not biz:
+            s.add(M.Business(
+                id=config.DEFAULT_BUSINESS_ID,
+                name=config.DEFAULT_BUSINESS_NAME,
+                type="dealership",
+                vertical=config.DEFAULT_BUSINESS_VERTICAL,
+                owner_phone=config.DEFAULT_OWNER_PHONE,
+            ))
+            await s.commit()
+    reset_runtime_data()
     yield
     await state.reset_state()
+    reset_runtime_data()
 
 
 # ---------------------------------------------------------------------------
@@ -124,8 +163,8 @@ async def seed_customer(
     lead_status: LeadStatus = LeadStatus.WARM,
 ) -> None:
     """Seed a customer with a conversation."""
-    customer = await state.get_or_create_customer(wa_id, name)
-    customer.lead_status = lead_status
+    await state.get_or_create_customer(wa_id, name)
+    await state.update_lead_status(wa_id, lead_status)
     await state.get_or_create_conversation(wa_id)
 
 

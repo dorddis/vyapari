@@ -7,11 +7,19 @@ includes the customer's name, lead temperature, current inventory, etc.
 from catalogue import BUSINESS, get_business_context, get_catalogue_summary, get_faq_text
 
 
-def build_customer_system_prompt(customer_name: str = "Customer", lead_status: str = "new") -> str:
+def build_customer_system_prompt(
+    customer_name: str = "Customer",
+    lead_status: str = "new",
+    source: str | None = None,
+) -> str:
     """Build the Customer Agent system prompt.
 
     Extracted from prototype conversation.py lines 16-45.
     """
+    source_context = ""
+    if source:
+        source_context = f"\nThis customer came from: {source}. Reference this in your first greeting — e.g. 'Saw you checking out our [car] video!'"
+
     return f"""You are the AI sales assistant for {BUSINESS['business_name']}, a used car dealership in Mumbai.
 
 ## Your personality
@@ -21,7 +29,7 @@ Sales approach: {BUSINESS['personality']['sales_approach']}
 
 ## Who you're talking to
 Customer name: {customer_name}
-Lead status: {lead_status}
+Lead status: {lead_status}{source_context}
 
 ## Rules
 - ONLY answer based on the catalogue and FAQ data below. NEVER make up cars, prices, or specs.

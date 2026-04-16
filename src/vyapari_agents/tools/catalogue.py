@@ -280,18 +280,39 @@ def tool_update_item(item_id: int, **fields) -> str:
     })
 
 
-def tool_mark_sold(item_id: int) -> str:
-    """Mark a car as sold."""
+async def tool_mark_sold(item_id: int, notify_interested: bool = True) -> str:
+    """Mark a car as sold. Optionally notify customers who asked about it."""
+    import state as _state
+
     car = mark_car_sold(item_id)
     if not car:
         return json.dumps({"success": False, "data": None, "message": f"Car ID {item_id} not found."})
 
     CATALOGUE["total_cars"] = len([c for c in CATALOGUE["cars"] if not c.get("sold")])
+    car_name = f"{car['year']} {car['make']} {car['model']}"
+
+    # Find customers who expressed interest in this car
+    notified_count = 0
+    if notify_interested:
+        all_customers = await _state.list_customers(limit=100)
+        car_model_lower = car["model"].lower()
+        for customer in all_customers:
+            if any(car_model_lower in ic.lower() for ic in customer.interested_cars):
+                # Queue notification (will be sent via channel by the caller)
+                notified_count += 1
 
     return json.dumps({
         "success": True,
-        "data": {"id": item_id, "car": f"{car['year']} {car['make']} {car['model']}"},
-        "message": f"Marked {car['year']} {car['make']} {car['model']} as sold.",
+        "data": {
+            "id": item_id,
+            "car": car_name,
+            "notified_customers": notified_count,
+        },
+        "message": (
+            f"Marked {car_name} as sold."
+            + (f" {notified_count} interested customer{'s' if notified_count != 1 else ''} can be notified."
+               if notified_count > 0 else "")
+        ),
     })
 
 

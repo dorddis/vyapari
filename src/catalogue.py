@@ -1,6 +1,8 @@
 """Load and query the demo catalogue + FAQs + business profile."""
 
+from copy import deepcopy
 import json
+
 import config
 from config import DATA_DIR
 
@@ -10,10 +12,24 @@ def _load_json(filename: str) -> dict:
         return json.load(f)
 
 
-# Load once at import
-BUSINESS = _load_json("business_profile.json")
-CATALOGUE = _load_json("catalogue.json")
-FAQS = _load_json("faqs.json")
+_ORIGINAL_BUSINESS = _load_json("business_profile.json")
+_ORIGINAL_CATALOGUE = _load_json("catalogue.json")
+_ORIGINAL_FAQS = _load_json("faqs.json")
+
+# Runtime copies that tools and prompts can mutate safely in-memory.
+BUSINESS = deepcopy(_ORIGINAL_BUSINESS)
+CATALOGUE = deepcopy(_ORIGINAL_CATALOGUE)
+FAQS = deepcopy(_ORIGINAL_FAQS)
+
+
+def reset_runtime_data() -> None:
+    """Reset business, catalogue, and FAQ data back to the demo baseline."""
+    BUSINESS.clear()
+    BUSINESS.update(deepcopy(_ORIGINAL_BUSINESS))
+    CATALOGUE.clear()
+    CATALOGUE.update(deepcopy(_ORIGINAL_CATALOGUE))
+    FAQS.clear()
+    FAQS.update(deepcopy(_ORIGINAL_FAQS))
 
 
 def update_business_profile(
@@ -25,7 +41,7 @@ def update_business_profile(
     greeting: str | None = None,
     faq_enabled: bool | None = None,
 ) -> dict:
-    """Update runtime business profile fields used by prompts/tools."""
+    """Update the runtime business profile used by prompts and tools."""
     if business_name:
         BUSINESS["business_name"] = business_name.strip()
     if business_type:
@@ -44,7 +60,7 @@ def update_business_profile(
 
 
 def get_customer_share_link() -> str:
-    """Build a customer-facing link for the currently configured business."""
+    """Customer-facing share link for the currently configured demo business."""
     slug = BUSINESS.get("business_name", config.DEFAULT_BUSINESS_NAME).strip().lower()
     slug = "-".join(part for part in slug.replace("&", " ").split() if part)
     return f"{config.PUBLIC_BASE_URL}/?business={slug or 'demo'}"

@@ -30,6 +30,9 @@ from models import StaffRole, StaffStatus
 OTP_WINDOW_SECONDS = 300  # 5 minutes
 MAX_ATTEMPTS = 3
 
+# Track failed login attempts per wa_id (separate from Pydantic model)
+_login_attempts: dict[str, int] = {}
+
 
 def generate_otp() -> tuple[str, str]:
     """Generate a 6-digit OTP and its bcrypt hash.
@@ -86,11 +89,9 @@ async def verify_login(wa_id: str, otp_input: str) -> tuple[bool, str]:
     """
     staff = await state.get_staff(wa_id)
 
-    # Check if there's even an invited record (get_staff filters out REMOVED
-    # but we also need to find INVITED ones)
+    # get_staff filters out REMOVED but we also need to find INVITED ones
     if not staff:
-        # Look directly — get_staff returns None for removed, but we need invited
-        raw = state._staff.get(wa_id)
+        raw = await state.get_staff_raw(wa_id)
         if raw and raw.status == StaffStatus.INVITED:
             staff = raw
         else:
@@ -111,10 +112,11 @@ async def verify_login(wa_id: str, otp_input: str) -> tuple[bool, str]:
         await state.remove_staff(wa_id)
         return False, "OTP expired. Ask your manager to generate a new one."
 
-    # Check attempts
-    attempts = getattr(staff, "_login_attempts", 0)
+    # Check attempts (tracked in module-level dict, not on Pydantic model)
+    attempts = _login_attempts.get(wa_id, 0)
     if attempts >= MAX_ATTEMPTS:
         await state.remove_staff(wa_id)
+        _login_attempts.pop(wa_id, None)
         return False, "Too many failed attempts. Ask your manager to re-add you."
 
     # Verify OTP
@@ -122,6 +124,7 @@ async def verify_login(wa_id: str, otp_input: str) -> tuple[bool, str]:
         return False, "Invalid invite state. Ask your manager to re-add you."
 
     if verify_otp(otp_input.strip(), staff.otp_hash):
+        _login_attempts.pop(wa_id, None)  # clear on success
         await state.update_staff(
             wa_id,
             status=StaffStatus.ACTIVE,
@@ -132,12 +135,13 @@ async def verify_login(wa_id: str, otp_input: str) -> tuple[bool, str]:
         return True, f"Verified! Welcome {staff.name}, you're now logged in as {staff.role.value} at Sharma Motors."
 
     # Wrong OTP — increment and check if now locked out
-    staff._login_attempts = attempts + 1  # type: ignore[attr-defined]
-    if staff._login_attempts >= MAX_ATTEMPTS:  # type: ignore[attr-defined]
+    _login_attempts[wa_id] = attempts + 1
+    if _login_attempts[wa_id] >= MAX_ATTEMPTS:
         await state.remove_staff(wa_id)
+        _login_attempts.pop(wa_id, None)
         return False, "Too many failed attempts. Ask your manager to re-add you."
 
-    remaining = MAX_ATTEMPTS - staff._login_attempts  # type: ignore[attr-defined]
+    remaining = MAX_ATTEMPTS - _login_attempts[wa_id]
     return False, f"Wrong OTP. {remaining} attempt{'s' if remaining != 1 else ''} remaining."
 
 
@@ -161,7 +165,7 @@ async def handle_login_message(wa_id: str, text: str) -> str:
     # Step 1: /login command -> prompt for OTP
     if text.lower().startswith("/login"):
         # Check if there's a pending invite
-        raw = state._staff.get(wa_id)
+        raw = await state.get_staff_raw(wa_id)
         if raw and raw.status == StaffStatus.ACTIVE:
             return f"You're already logged in as {raw.role.value}!"
 
@@ -189,3 +193,4 @@ async def handle_login_message(wa_id: str, text: str) -> str:
 async def reset_auth_state() -> None:
     """Clear login state. Used in tests."""
     _login_in_progress.clear()
+    _login_attempts.clear()

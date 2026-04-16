@@ -10,9 +10,9 @@ from agents import Agent, Runner, function_tool, RunContextWrapper, ModelSetting
 
 import config
 import state
-from agents.context import StaffContext
-from agents.app_prompts import build_owner_system_prompt, build_sdr_system_prompt
-from agents.tools.catalogue import (
+from vyapari_agents.context import StaffContext
+from vyapari_agents.prompts import build_owner_system_prompt, build_sdr_system_prompt
+from vyapari_agents.tools.catalogue import (
     tool_add_item,
     tool_check_availability,
     tool_get_catalogue_summary,
@@ -22,7 +22,7 @@ from agents.tools.catalogue import (
     tool_search_catalogue,
     tool_update_item,
 )
-from agents.tools.business import (
+from vyapari_agents.tools.business import (
     tool_add_faq,
     tool_get_business_info,
     tool_get_faq_answer,
@@ -105,9 +105,9 @@ def update_item(item_id: int, field: str, value: str) -> str:
 
 
 @function_tool
-def mark_sold(item_id: int) -> str:
-    """Mark a car as sold."""
-    return tool_mark_sold(item_id)
+async def mark_sold(item_id: int) -> str:
+    """Mark a car as sold and notify interested customers."""
+    return await tool_mark_sold(item_id)
 
 
 @function_tool
@@ -141,21 +141,21 @@ async def get_active_leads(
     limit: int = 10,
 ) -> str:
     """Get active leads, optionally filtered by status or search query."""
-    from agents.tools.leads import tool_get_active_leads
+    from vyapari_agents.tools.leads import tool_get_active_leads
     return await tool_get_active_leads(status_filter, search_query, limit)
 
 
 @function_tool
 async def get_lead_details(identifier: str) -> str:
     """Get full details for a customer by phone number or name."""
-    from agents.tools.leads import tool_get_lead_details
+    from vyapari_agents.tools.leads import tool_get_lead_details
     return await tool_get_lead_details(identifier)
 
 
 @function_tool
 async def get_stats(period: str = "today") -> str:
     """Get business stats — lead counts, top queried cars, by status."""
-    from agents.tools.leads import tool_get_stats
+    from vyapari_agents.tools.leads import tool_get_stats
     return await tool_get_stats(period)
 
 
@@ -165,14 +165,14 @@ async def open_session(
     query: str,
 ) -> str:
     """Open a relay session to chat with a customer. Search by name or car."""
-    from agents.tools.relay import tool_open_session
+    from vyapari_agents.tools.relay import tool_open_session
     return await tool_open_session(ctx.context.staff_id, query)
 
 
 @function_tool
 async def get_customer_number(identifier: str) -> str:
     """Get a customer's phone number for direct call."""
-    from agents.tools.relay import tool_get_customer_number
+    from vyapari_agents.tools.relay import tool_get_customer_number
     return await tool_get_customer_number(identifier)
 
 
@@ -184,43 +184,59 @@ async def add_staff(
     role: str = "sdr",
 ) -> str:
     """Add a new staff member and generate an OTP invite."""
-    from agents.tools.staff import tool_add_staff
+    from vyapari_agents.tools.staff import tool_add_staff
     return await tool_add_staff(name, wa_id, role, added_by=ctx.context.staff_id)
 
 
 @function_tool
 async def remove_staff(identifier: str) -> str:
     """Remove a staff member by phone number or name."""
-    from agents.tools.staff import tool_remove_staff
+    from vyapari_agents.tools.staff import tool_remove_staff
     return await tool_remove_staff(identifier)
 
 
 @function_tool
 async def list_staff() -> str:
     """List all active and invited staff members."""
-    from agents.tools.staff import tool_list_staff
+    from vyapari_agents.tools.staff import tool_list_staff
     return await tool_list_staff()
 
 
 @function_tool
 async def assign_lead(customer_identifier: str, staff_identifier: str) -> str:
     """Assign a lead to a specific staff member."""
-    from agents.tools.leads import tool_assign_lead
+    from vyapari_agents.tools.leads import tool_assign_lead
     return await tool_assign_lead(customer_identifier, staff_identifier)
 
 
 @function_tool
 async def broadcast_message(message_text: str, filter_status: str = "all") -> str:
     """Send a message to multiple customers."""
-    from agents.tools.communication import tool_broadcast_message
+    from vyapari_agents.tools.communication import tool_broadcast_message
     return await tool_broadcast_message(message_text, filter_status)
 
 
 @function_tool
 async def batch_followup(date: str = "yesterday", status_filter: str = "warm,hot") -> str:
     """Generate and send personalized follow-ups for leads from a date."""
-    from agents.tools.leads import tool_batch_followup
+    from vyapari_agents.tools.leads import tool_batch_followup
     return await tool_batch_followup(date, status_filter)
+
+
+@function_tool
+async def parse_inventory_image(image_url: str) -> str:
+    """Parse a car inventory image or PDF. Extracts car data and adds to catalogue.
+    Use when the owner sends a photo, PDF, or screenshot of their stock list."""
+    from vyapari_agents.tools.vision import tool_parse_inventory
+    return await tool_parse_inventory(image_url)
+
+
+@function_tool
+async def parse_token_proof(image_url: str, car_name: str | None = None) -> str:
+    """Parse a UPI/payment screenshot. Extracts amount, sender, status.
+    Use when the owner forwards a token payment proof."""
+    from vyapari_agents.tools.vision import tool_parse_token_screenshot
+    return await tool_parse_token_screenshot(image_url, car_name)
 
 
 # ---------------------------------------------------------------------------
@@ -236,7 +252,7 @@ def _sdr_instructions(ctx: RunContextWrapper[StaffContext], agent: Agent) -> str
 
 
 _model_settings = ModelSettings(
-    reasoning={"effort": "none"},  # lower latency for dashboard/oracle queries
+    reasoning={"effort": "low"},  # GPT-5.4 tool calling fix
 )
 
 owner_agent = Agent[StaffContext](
@@ -250,6 +266,7 @@ owner_agent = Agent[StaffContext](
         open_session, get_customer_number,
         add_staff, remove_staff, list_staff,
         broadcast_message, batch_followup,
+        parse_inventory_image, parse_token_proof,
     ],
     model=config.OPENAI_MAIN_MODEL,
     model_settings=_model_settings,
@@ -272,8 +289,12 @@ sdr_agent = Agent[StaffContext](
 # Run functions (called from router handlers)
 # ---------------------------------------------------------------------------
 
-async def run_owner_agent(wa_id: str, message: str) -> str:
+async def run_owner_agent(
+    wa_id: str, message: str, image_url: str | None = None
+) -> str:
     """Run the Owner Agent for a single message turn."""
+    from models import MessageRole
+
     staff = await state.get_staff(wa_id)
     if not staff:
         return "Staff not found."
@@ -290,10 +311,22 @@ async def run_owner_agent(wa_id: str, message: str) -> str:
 
     agent = owner_agent if staff.role.value == "owner" else sdr_agent
 
+    # Build input — with image if provided (for PDF upload, token screenshots)
+    if image_url:
+        input_messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": message or "What is this?"},
+                {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
+            ],
+        }]
+    else:
+        input_messages = [{"role": "user", "content": message}]
+
     try:
         result = await Runner.run(
             starting_agent=agent,
-            input=message,
+            input=input_messages,
             context=ctx,
         )
         return result.final_output or "I couldn't process that. Try again."

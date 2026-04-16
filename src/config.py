@@ -21,13 +21,21 @@ STATIC_DIR = BASE_DIR / "static"
 # OpenAI
 # ---------------------------------------------------------------------------
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
-OPENAI_MAIN_MODEL = os.getenv("OPENAI_MAIN_MODEL", "gpt-5.4-mini")
-OPENAI_CLASSIFIER_MODEL = os.getenv("OPENAI_CLASSIFIER_MODEL", "gpt-5.4-nano")
-OPENAI_STT_MODEL = os.getenv("OPENAI_STT_MODEL", "whisper-1")
-OPENAI_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "")
+OPENAI_MAIN_MODEL = os.getenv("OPENAI_MAIN_MODEL", "gpt-5.4")
+OPENAI_CLASSIFIER_MODEL = os.getenv("OPENAI_CLASSIFIER_MODEL", "gpt-4.1-nano")
+OPENAI_STT_MODEL = os.getenv("OPENAI_STT_MODEL", "gpt-4o-transcribe")
+OPENAI_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
+OPENAI_TTS_VOICE = os.getenv("OPENAI_TTS_VOICE", "coral")
+VOICE_REPLY_ENABLED = os.getenv("VOICE_REPLY_ENABLED", "true").lower() == "true"
 
-# OpenAI is the only LLM backend for this project.
+# If no OpenAI key, fall back to existing Gemini conversation engine
 USE_OPENAI = bool(OPENAI_API_KEY)
+
+# ---------------------------------------------------------------------------
+# Gemini (fallback)
+# ---------------------------------------------------------------------------
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # ---------------------------------------------------------------------------
 # Database
@@ -51,7 +59,7 @@ if not DATABASE_URL:
 # ---------------------------------------------------------------------------
 # Channel (WhatsApp vs Web Clone fallback)
 # ---------------------------------------------------------------------------
-CHANNEL_MODE = os.getenv("CHANNEL_MODE", "whatsapp")  # "whatsapp" | "web_clone"
+CHANNEL_MODE = os.getenv("CHANNEL_MODE", "web_clone")  # "whatsapp" | "web_clone"
 
 # ---------------------------------------------------------------------------
 # WhatsApp Cloud API

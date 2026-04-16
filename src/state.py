@@ -1,15 +1,24 @@
-"""In-memory state store with async interface.
+"""Persistent state store backed by SQLAlchemy async sessions.
 
-Every function is async so the interface stays stable when swapped to
-PostgreSQL. Uses asyncio.Lock per wa_id to prevent race conditions
-in concurrent webhook handling.
+Every function is async and returns the same Pydantic record types as the
+original in-memory implementation so **no callers need to change**.
+
+DB tables live in db_models.py.  On startup, init_state() seeds the demo
+owner.  For tests, reset_state() truncates all tables.
+
+Idempotency and relay locks stay in-memory (they are ephemeral by nature).
 """
 
 import asyncio
+import logging
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
+from sqlalchemy import delete, select, update
+
 import config
+import db_models as M
+from database import get_session_factory
 from models import (
     ConversationRecord,
     ConversationState,
@@ -27,25 +36,28 @@ from models import (
     StaffStatus,
 )
 
-# ---------------------------------------------------------------------------
-# Storage (will be replaced by DB queries)
-# ---------------------------------------------------------------------------
-_staff: dict[str, StaffRecord] = {}
-_customers: dict[str, CustomerRecord] = {}
-_conversations: dict[str, ConversationRecord] = {}  # keyed by customer_wa_id
-_messages: dict[str, list[MessageRecord]] = {}  # keyed by conversation_id
-_relay_sessions: dict[str, RelaySessionRecord] = {}  # keyed by staff_wa_id
-_escalations: dict[str, list[EscalationRecord]] = {}  # keyed by conversation_id
-_owner_setup_flows: dict[str, OwnerSetupRecord] = {}  # keyed by owner wa_id
-_processed_msg_ids: dict[str, float] = {}  # msg_id -> timestamp, for idempotency
-_MAX_PROCESSED_IDS = 10000  # cap to prevent unbounded growth
+log = logging.getLogger("vyapari.state")
 
-# Per-conversation locks to prevent race conditions
-_locks: dict[str, asyncio.Lock] = {}
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+_DEFAULT_BIZ = config.DEFAULT_BUSINESS_ID
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _session():
+    """Shortcut to get an async session context manager."""
+    return get_session_factory()()
+
+
+# Ephemeral in-memory stores (not worth persisting)
+_processed_msg_ids: dict[str, float] = {}
+_MAX_PROCESSED_IDS = 10000
+_locks: dict[str, asyncio.Lock] = {}
 
 
 def _get_lock(key: str) -> asyncio.Lock:
@@ -55,21 +67,120 @@ def _get_lock(key: str) -> asyncio.Lock:
 
 
 # ---------------------------------------------------------------------------
-# Idempotency
+# ORM row <-> Pydantic record converters
+# ---------------------------------------------------------------------------
+
+def _tz_aware(dt: datetime | None) -> datetime | None:
+    """Ensure a datetime is timezone-aware (SQLite returns naive)."""
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _staff_to_record(row: M.Staff) -> StaffRecord:
+    return StaffRecord(
+        wa_id=row.wa_id,
+        name=row.name,
+        role=StaffRole(row.role),
+        status=StaffStatus(row.status),
+        otp_hash=row.otp_hash,
+        otp_expires_at=_tz_aware(row.otp_expires_at),
+        added_by=row.added_by,
+        last_active=_tz_aware(row.last_active_at),
+    )
+
+
+def _customer_to_record(row: M.Customer) -> CustomerRecord:
+    return CustomerRecord(
+        wa_id=row.wa_id,
+        name=row.name,
+        channel=row.channel,
+        source=row.source,
+        lead_status=LeadStatus(row.lead_status),
+        created_at=row.first_seen,
+        last_message_at=row.last_active,
+        interested_cars=row.interested_cars or [],
+    )
+
+
+def _conv_to_record(row: M.Conversation) -> ConversationRecord:
+    return ConversationRecord(
+        id=row.id,
+        customer_wa_id=row.customer_wa_id,
+        state=ConversationState(row.status),
+        assigned_to=row.assigned_to,
+        escalation_reason=row.escalation_reason or "",
+        created_at=row.started_at,
+        last_activity=row.last_updated_at,
+    )
+
+
+def _msg_to_record(row: M.Message) -> MessageRecord:
+    return MessageRecord(
+        id=row.id,
+        conversation_id=row.conversation_id,
+        role=MessageRole(row.role),
+        content=row.content,
+        msg_type=MessageType(row.message_type) if row.message_type in {e.value for e in MessageType} else MessageType.TEXT,
+        wa_msg_id=row.wa_msg_id,
+        images=row.images or [],
+        is_escalation=row.is_escalation,
+        escalation_reason=row.escalation_reason or "",
+        timestamp=row.timestamp,
+    )
+
+
+def _relay_to_record(row: M.RelaySession) -> RelaySessionRecord:
+    return RelaySessionRecord(
+        id=row.id,
+        staff_wa_id=row.staff_wa_id,
+        customer_wa_id=row.customer_wa_id,
+        conversation_id=row.conversation_id,
+        started_at=row.started_at,
+        last_active=row.last_active_at,
+        status=RelaySessionStatus(row.status),
+    )
+
+
+def _esc_to_record(row: M.Escalation) -> EscalationRecord:
+    return EscalationRecord(
+        id=row.id,
+        conversation_id=row.conversation_id,
+        trigger=row.trigger,
+        summary=row.summary,
+        status=row.status,
+        created_at=row.created_at,
+        resolved_at=row.resolved_at,
+    )
+
+
+def _setup_to_record(row: M.OwnerSetup) -> OwnerSetupRecord:
+    return OwnerSetupRecord(
+        wa_id=row.wa_id,
+        current_step=row.current_step,
+        collected=row.collected or {},
+        active=row.active,
+        started_at=row.started_at,
+        updated_at=row.updated_at,
+        completed_at=row.completed_at,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Idempotency (stays in-memory — ephemeral by design)
 # ---------------------------------------------------------------------------
 
 async def is_message_processed(msg_id: str) -> bool:
-    """Check if we've already processed this webhook message ID."""
     return msg_id in _processed_msg_ids
 
 
 async def mark_message_processed(msg_id: str) -> None:
-    """Mark a webhook message ID as processed. Evicts oldest entries if over cap."""
     import time
-
     _processed_msg_ids[msg_id] = time.time()
     if len(_processed_msg_ids) > _MAX_PROCESSED_IDS:
-        sorted_ids = sorted(_processed_msg_ids.items(), key=lambda item: item[1])
+        sorted_ids = sorted(_processed_msg_ids.items(), key=lambda x: x[1])
         for old_id, _ in sorted_ids[: len(sorted_ids) - _MAX_PROCESSED_IDS]:
             del _processed_msg_ids[old_id]
 
@@ -79,11 +190,21 @@ async def mark_message_processed(msg_id: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def get_staff(wa_id: str) -> StaffRecord | None:
-    """Look up a staff member by phone number."""
-    staff = _staff.get(wa_id)
-    if staff and staff.status == StaffStatus.REMOVED:
-        return None
-    return staff
+    async with _session() as s:
+        row = await s.get(M.Staff, wa_id)
+        if not row or row.status == "removed":
+            return None
+        return _staff_to_record(row)
+
+
+async def get_staff_raw(wa_id: str) -> StaffRecord | None:
+    """Like get_staff but returns ANY status (including invited/removed).
+
+    Used by auth.py to check invite state.
+    """
+    async with _session() as s:
+        row = await s.get(M.Staff, wa_id)
+        return _staff_to_record(row) if row else None
 
 
 async def add_staff(
@@ -95,46 +216,76 @@ async def add_staff(
     otp_expires_at: datetime | None = None,
     added_by: str | None = None,
 ) -> StaffRecord:
-    """Add a new staff member."""
-    record = StaffRecord(
-        wa_id=wa_id,
-        name=name,
-        role=role,
-        status=status,
-        otp_hash=otp_hash,
-        otp_expires_at=otp_expires_at,
-        added_by=added_by,
-        last_active=_now(),
-    )
-    _staff[wa_id] = record
-    return record
+    async with _session() as s:
+        existing = await s.get(M.Staff, wa_id)
+        if existing:
+            existing.name = name
+            existing.role = role.value
+            existing.status = status.value
+            existing.otp_hash = otp_hash
+            existing.otp_expires_at = otp_expires_at
+            existing.added_by = added_by
+            existing.last_active_at = _now()
+            await s.commit()
+            return _staff_to_record(existing)
+        row = M.Staff(
+            wa_id=wa_id,
+            business_id=_DEFAULT_BIZ,
+            name=name,
+            role=role.value,
+            status=status.value,
+            otp_hash=otp_hash,
+            otp_expires_at=otp_expires_at,
+            added_by=added_by,
+            last_active_at=_now(),
+        )
+        s.add(row)
+        await s.commit()
+        return _staff_to_record(row)
 
 
 async def remove_staff(wa_id: str) -> bool:
-    """Revoke staff access. Returns True if found."""
-    if wa_id in _staff:
-        _staff[wa_id].status = StaffStatus.REMOVED
-        # Close any active relay sessions
-        if wa_id in _relay_sessions:
-            await close_relay_session(wa_id)
-        return True
-    return False
+    async with _session() as s:
+        row = await s.get(M.Staff, wa_id)
+        if not row:
+            return False
+        row.status = "removed"
+        await s.commit()
+    # Close any active relay sessions
+    await close_relay_session(wa_id)
+    return True
 
 
 async def update_staff(wa_id: str, **fields) -> StaffRecord | None:
-    """Update staff record fields."""
-    staff = _staff.get(wa_id)
-    if not staff:
-        return None
-    for key, value in fields.items():
-        if hasattr(staff, key):
-            setattr(staff, key, value)
-    return staff
+    async with _session() as s:
+        row = await s.get(M.Staff, wa_id)
+        if not row:
+            return None
+        field_map = {
+            "status": "status",
+            "otp_hash": "otp_hash",
+            "otp_expires_at": "otp_expires_at",
+            "name": "name",
+            "last_active": "last_active_at",
+            "attempts": "attempts",
+        }
+        for key, value in fields.items():
+            col = field_map.get(key, key)
+            if hasattr(row, col):
+                # Convert enum values to strings for DB storage
+                if hasattr(value, "value"):
+                    value = value.value
+                setattr(row, col, value)
+        await s.commit()
+        return _staff_to_record(row)
 
 
 async def list_staff() -> list[StaffRecord]:
-    """List all active and invited staff."""
-    return [s for s in _staff.values() if s.status != StaffStatus.REMOVED]
+    async with _session() as s:
+        result = await s.execute(
+            select(M.Staff).where(M.Staff.status != "removed")
+        )
+        return [_staff_to_record(r) for r in result.scalars().all()]
 
 
 # ---------------------------------------------------------------------------
@@ -142,31 +293,41 @@ async def list_staff() -> list[StaffRecord]:
 # ---------------------------------------------------------------------------
 
 async def get_customer(wa_id: str) -> CustomerRecord | None:
-    return _customers.get(wa_id)
+    async with _session() as s:
+        row = await s.get(M.Customer, wa_id)
+        return _customer_to_record(row) if row else None
 
 
 async def get_or_create_customer(
     wa_id: str, name: str | None = None, source: str | None = None
 ) -> CustomerRecord:
-    """Get existing customer or create a new one."""
-    if wa_id not in _customers:
-        _customers[wa_id] = CustomerRecord(
+    async with _session() as s:
+        row = await s.get(M.Customer, wa_id)
+        if row:
+            row.last_active = _now()
+            if name:
+                row.name = name
+            await s.commit()
+            return _customer_to_record(row)
+        row = M.Customer(
             wa_id=wa_id,
+            business_id=_DEFAULT_BIZ,
             name=name or "Customer",
             source=source,
-            created_at=_now(),
-            last_message_at=_now(),
+            first_seen=_now(),
+            last_active=_now(),
         )
-    else:
-        _customers[wa_id].last_message_at = _now()
-        if name:
-            _customers[wa_id].name = name
-    return _customers[wa_id]
+        s.add(row)
+        await s.commit()
+        return _customer_to_record(row)
 
 
 async def update_lead_status(wa_id: str, status: LeadStatus) -> None:
-    if wa_id in _customers:
-        _customers[wa_id].lead_status = status
+    async with _session() as s:
+        row = await s.get(M.Customer, wa_id)
+        if row:
+            row.lead_status = status.value
+            await s.commit()
 
 
 async def list_customers(
@@ -174,20 +335,18 @@ async def list_customers(
     search_query: str | None = None,
     limit: int = 20,
 ) -> list[CustomerRecord]:
-    """List customers with optional filters."""
-    results = list(_customers.values())
-    if status_filter:
-        results = [c for c in results if c.lead_status in status_filter]
-    if search_query:
-        q = search_query.lower()
-        results = [
-            c for c in results
-            if q in c.name.lower()
-            or q in c.wa_id
-            or any(q in car.lower() for car in c.interested_cars)
-        ]
-    results.sort(key=lambda c: c.last_message_at, reverse=True)
-    return results[:limit]
+    async with _session() as s:
+        stmt = select(M.Customer).where(M.Customer.business_id == _DEFAULT_BIZ)
+        if status_filter:
+            stmt = stmt.where(M.Customer.lead_status.in_([st.value for st in status_filter]))
+        if search_query:
+            q = f"%{search_query.lower()}%"
+            stmt = stmt.where(
+                M.Customer.name.ilike(q) | M.Customer.wa_id.contains(search_query)
+            )
+        stmt = stmt.order_by(M.Customer.last_active.desc()).limit(limit)
+        result = await s.execute(stmt)
+        return [_customer_to_record(r) for r in result.scalars().all()]
 
 
 # ---------------------------------------------------------------------------
@@ -195,38 +354,72 @@ async def list_customers(
 # ---------------------------------------------------------------------------
 
 async def get_conversation(customer_wa_id: str) -> ConversationRecord | None:
-    return _conversations.get(customer_wa_id)
+    async with _session() as s:
+        result = await s.execute(
+            select(M.Conversation)
+            .where(M.Conversation.customer_wa_id == customer_wa_id)
+            .order_by(M.Conversation.started_at.desc())
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        return _conv_to_record(row) if row else None
 
 
 async def get_or_create_conversation(customer_wa_id: str) -> ConversationRecord:
-    if customer_wa_id not in _conversations:
-        conv_id = str(uuid4())
-        _conversations[customer_wa_id] = ConversationRecord(
-            id=conv_id,
-            customer_wa_id=customer_wa_id,
-            created_at=_now(),
-            last_activity=_now(),
+    async with _session() as s:
+        result = await s.execute(
+            select(M.Conversation)
+            .where(M.Conversation.customer_wa_id == customer_wa_id)
+            .order_by(M.Conversation.started_at.desc())
+            .limit(1)
         )
-        _messages[conv_id] = []
-    else:
-        _conversations[customer_wa_id].last_activity = _now()
-    return _conversations[customer_wa_id]
+        row = result.scalar_one_or_none()
+        if row:
+            row.last_updated_at = _now()
+            await s.commit()
+            return _conv_to_record(row)
+        conv_id = str(uuid4())
+        row = M.Conversation(
+            id=conv_id,
+            business_id=_DEFAULT_BIZ,
+            customer_wa_id=customer_wa_id,
+            started_at=_now(),
+            last_updated_at=_now(),
+        )
+        s.add(row)
+        await s.commit()
+        return _conv_to_record(row)
 
 
 async def get_conversation_state(customer_wa_id: str) -> ConversationState:
-    conv = _conversations.get(customer_wa_id)
-    return conv.state if conv else ConversationState.ACTIVE
+    async with _session() as s:
+        result = await s.execute(
+            select(M.Conversation.status)
+            .where(M.Conversation.customer_wa_id == customer_wa_id)
+            .order_by(M.Conversation.started_at.desc())
+            .limit(1)
+        )
+        status = result.scalar_one_or_none()
+        return ConversationState(status) if status else ConversationState.ACTIVE
 
 
 async def set_conversation_state(
     customer_wa_id: str, state: ConversationState, reason: str = ""
 ) -> None:
-    conv = _conversations.get(customer_wa_id)
-    if conv:
-        conv.state = state
-        conv.last_activity = _now()
-        if reason:
-            conv.escalation_reason = reason
+    async with _session() as s:
+        result = await s.execute(
+            select(M.Conversation)
+            .where(M.Conversation.customer_wa_id == customer_wa_id)
+            .order_by(M.Conversation.started_at.desc())
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        if row:
+            row.status = state.value
+            row.last_updated_at = _now()
+            if reason:
+                row.escalation_reason = reason
+            await s.commit()
 
 
 # ---------------------------------------------------------------------------
@@ -243,9 +436,24 @@ async def add_message(
     is_escalation: bool = False,
     escalation_reason: str = "",
 ) -> MessageRecord:
-    """Append a message to a conversation."""
-    msg = MessageRecord(
-        id=str(uuid4()),
+    msg_id = str(uuid4())
+    async with _session() as s:
+        row = M.Message(
+            id=msg_id,
+            conversation_id=conversation_id,
+            role=role.value,
+            content=content,
+            message_type=msg_type.value,
+            wa_msg_id=wa_msg_id,
+            images=images or [],
+            is_escalation=is_escalation,
+            escalation_reason=escalation_reason,
+            timestamp=_now(),
+        )
+        s.add(row)
+        await s.commit()
+    return MessageRecord(
+        id=msg_id,
         conversation_id=conversation_id,
         role=role,
         content=content,
@@ -256,32 +464,54 @@ async def add_message(
         escalation_reason=escalation_reason,
         timestamp=_now(),
     )
-    if conversation_id not in _messages:
-        _messages[conversation_id] = []
-    _messages[conversation_id].append(msg)
-    return msg
 
 
 async def get_messages(
     conversation_id: str, limit: int | None = None
 ) -> list[MessageRecord]:
-    """Get messages for a conversation, optionally limited to last N."""
-    msgs = _messages.get(conversation_id, [])
-    if limit:
-        return msgs[-limit:]
-    return msgs
+    async with _session() as s:
+        stmt = (
+            select(M.Message)
+            .where(M.Message.conversation_id == conversation_id)
+            .order_by(M.Message.timestamp.asc())
+        )
+        if limit:
+            # Get the last N messages by subquery
+            count_result = await s.execute(
+                select(M.Message.id)
+                .where(M.Message.conversation_id == conversation_id)
+            )
+            all_ids = count_result.scalars().all()
+            if len(all_ids) > limit:
+                stmt = (
+                    select(M.Message)
+                    .where(M.Message.conversation_id == conversation_id)
+                    .order_by(M.Message.timestamp.desc())
+                    .limit(limit)
+                )
+                result = await s.execute(stmt)
+                rows = list(result.scalars().all())
+                rows.reverse()
+                return [_msg_to_record(r) for r in rows]
+        result = await s.execute(stmt)
+        return [_msg_to_record(r) for r in result.scalars().all()]
 
 
 async def get_last_customer_message_time(customer_wa_id: str) -> datetime | None:
-    """Get timestamp of last customer message (for 24hr window check)."""
-    conv = _conversations.get(customer_wa_id)
+    conv = await get_conversation(customer_wa_id)
     if not conv:
         return None
-    msgs = _messages.get(conv.id, [])
-    for msg in reversed(msgs):
-        if msg.role == MessageRole.CUSTOMER:
-            return msg.timestamp
-    return None
+    async with _session() as s:
+        result = await s.execute(
+            select(M.Message.timestamp)
+            .where(
+                M.Message.conversation_id == conv.id,
+                M.Message.role == "customer",
+            )
+            .order_by(M.Message.timestamp.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
 
 
 # ---------------------------------------------------------------------------
@@ -291,96 +521,135 @@ async def get_last_customer_message_time(customer_wa_id: str) -> datetime | None
 async def create_relay_session(
     staff_wa_id: str, customer_wa_id: str
 ) -> RelaySessionRecord | None:
-    """Create a relay session. Returns None if customer is already in a relay.
-
-    Uses an asyncio lock per customer to prevent check-then-act races.
-    Closes any existing active session for this staff member before switching.
-    """
     async with _get_lock(f"relay_{customer_wa_id}"):
-        for other_staff, session in _relay_sessions.items():
-            if (
-                session.customer_wa_id == customer_wa_id
-                and session.status == RelaySessionStatus.ACTIVE
-                and other_staff != staff_wa_id
-            ):
+        async with _session() as s:
+            # Check if customer is already in active relay with ANOTHER staff
+            result = await s.execute(
+                select(M.RelaySession).where(
+                    M.RelaySession.customer_wa_id == customer_wa_id,
+                    M.RelaySession.status == "active",
+                    M.RelaySession.staff_wa_id != staff_wa_id,
+                )
+            )
+            if result.scalar_one_or_none():
                 return None
 
-        existing = _relay_sessions.get(staff_wa_id)
-        if existing and existing.status == RelaySessionStatus.ACTIVE:
-            existing.status = RelaySessionStatus.CLOSED
-            await set_conversation_state(existing.customer_wa_id, ConversationState.ACTIVE)
+            # Close any existing session for this staff member
+            result = await s.execute(
+                select(M.RelaySession).where(
+                    M.RelaySession.staff_wa_id == staff_wa_id,
+                    M.RelaySession.status == "active",
+                )
+            )
+            existing = result.scalar_one_or_none()
+            if existing:
+                existing.status = "closed"
+                await s.commit()
+                await set_conversation_state(existing.customer_wa_id, ConversationState.ACTIVE)
 
-        conv = _conversations.get(customer_wa_id)
+        # Get conversation (need fresh session after possible commit)
+        conv = await get_conversation(customer_wa_id)
         if not conv:
             return None
 
-        session = RelaySessionRecord(
-            id=str(uuid4()),
-            staff_wa_id=staff_wa_id,
-            customer_wa_id=customer_wa_id,
-            conversation_id=conv.id,
-            started_at=_now(),
-            last_active=_now(),
-        )
-        _relay_sessions[staff_wa_id] = session
+        async with _session() as s:
+            row = M.RelaySession(
+                id=str(uuid4()),
+                staff_wa_id=staff_wa_id,
+                customer_wa_id=customer_wa_id,
+                conversation_id=conv.id,
+                started_at=_now(),
+                last_active_at=_now(),
+            )
+            s.add(row)
+            await s.commit()
+
         await set_conversation_state(customer_wa_id, ConversationState.RELAY_ACTIVE)
-        return session
+        return _relay_to_record(row)
 
 
 async def get_active_relay_for_staff(staff_wa_id: str) -> RelaySessionRecord | None:
-    session = _relay_sessions.get(staff_wa_id)
-    if session and session.status == RelaySessionStatus.ACTIVE:
-        return session
-    return None
+    async with _session() as s:
+        result = await s.execute(
+            select(M.RelaySession).where(
+                M.RelaySession.staff_wa_id == staff_wa_id,
+                M.RelaySession.status == "active",
+            )
+        )
+        row = result.scalar_one_or_none()
+        return _relay_to_record(row) if row else None
 
 
 async def get_active_relay_for_customer(
     customer_wa_id: str,
 ) -> RelaySessionRecord | None:
-    for session in _relay_sessions.values():
-        if (
-            session.customer_wa_id == customer_wa_id
-            and session.status == RelaySessionStatus.ACTIVE
-        ):
-            return session
-    return None
+    async with _session() as s:
+        result = await s.execute(
+            select(M.RelaySession).where(
+                M.RelaySession.customer_wa_id == customer_wa_id,
+                M.RelaySession.status == "active",
+            )
+        )
+        row = result.scalar_one_or_none()
+        return _relay_to_record(row) if row else None
 
 
 async def close_relay_session(
     staff_wa_id: str, reason: str = "manual"
 ) -> RelaySessionRecord | None:
-    """Close a relay session. Returns the closed session or None."""
-    session = _relay_sessions.get(staff_wa_id)
-    if not session or session.status != RelaySessionStatus.ACTIVE:
-        return None
+    async with _session() as s:
+        result = await s.execute(
+            select(M.RelaySession).where(
+                M.RelaySession.staff_wa_id == staff_wa_id,
+                M.RelaySession.status == "active",
+            )
+        )
+        row = result.scalar_one_or_none()
+        if not row:
+            return None
+        row.status = "expired" if reason == "timeout" else "closed"
+        customer_wa_id = row.customer_wa_id
+        record = _relay_to_record(row)
+        await s.commit()
 
-    session.status = (
-        RelaySessionStatus.EXPIRED
-        if reason == "timeout"
-        else RelaySessionStatus.CLOSED
-    )
-    await set_conversation_state(
-        session.customer_wa_id, ConversationState.ACTIVE
-    )
-    return session
+    await set_conversation_state(customer_wa_id, ConversationState.ACTIVE)
+    return record
 
 
 async def update_relay_last_active(staff_wa_id: str) -> None:
-    session = _relay_sessions.get(staff_wa_id)
-    if session and session.status == RelaySessionStatus.ACTIVE:
-        session.last_active = _now()
+    async with _session() as s:
+        result = await s.execute(
+            select(M.RelaySession).where(
+                M.RelaySession.staff_wa_id == staff_wa_id,
+                M.RelaySession.status == "active",
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row:
+            row.last_active_at = _now()
+            await s.commit()
 
 
 async def check_expired_relay_sessions() -> list[RelaySessionRecord]:
-    """Check and close expired relay sessions. Returns list of expired."""
     timeout = timedelta(minutes=config.RELAY_SESSION_TIMEOUT_MINUTES)
+    cutoff = _now() - timeout
     expired = []
-    for staff_wa_id, session in list(_relay_sessions.items()):
-        if session.status != RelaySessionStatus.ACTIVE:
-            continue
-        if _now() - session.last_active > timeout:
-            await close_relay_session(staff_wa_id, reason="timeout")
-            expired.append(session)
+    async with _session() as s:
+        result = await s.execute(
+            select(M.RelaySession).where(
+                M.RelaySession.status == "active",
+                M.RelaySession.last_active_at < cutoff,
+            )
+        )
+        rows = result.scalars().all()
+        for row in rows:
+            row.status = "expired"
+            expired.append(_relay_to_record(row))
+        await s.commit()
+
+    # Restore conversation states
+    for rec in expired:
+        await set_conversation_state(rec.customer_wa_id, ConversationState.ACTIVE)
     return expired
 
 
@@ -396,17 +665,24 @@ async def is_customer_in_relay(customer_wa_id: str) -> bool:
 async def add_escalation(
     conversation_id: str, trigger: str, summary: str
 ) -> EscalationRecord:
-    esc = EscalationRecord(
-        id=str(uuid4()),
+    esc_id = str(uuid4())
+    async with _session() as s:
+        row = M.Escalation(
+            id=esc_id,
+            conversation_id=conversation_id,
+            trigger=trigger,
+            summary=summary,
+            created_at=_now(),
+        )
+        s.add(row)
+        await s.commit()
+    return EscalationRecord(
+        id=esc_id,
         conversation_id=conversation_id,
         trigger=trigger,
         summary=summary,
         created_at=_now(),
     )
-    if conversation_id not in _escalations:
-        _escalations[conversation_id] = []
-    _escalations[conversation_id].append(esc)
-    return esc
 
 
 # ---------------------------------------------------------------------------
@@ -414,7 +690,9 @@ async def add_escalation(
 # ---------------------------------------------------------------------------
 
 async def get_owner_setup(wa_id: str) -> OwnerSetupRecord | None:
-    return _owner_setup_flows.get(wa_id)
+    async with _session() as s:
+        row = await s.get(M.OwnerSetup, wa_id)
+        return _setup_to_record(row) if row else None
 
 
 async def start_owner_setup(
@@ -422,16 +700,26 @@ async def start_owner_setup(
     current_step: str = "business_name",
     collected: dict | None = None,
 ) -> OwnerSetupRecord:
-    record = OwnerSetupRecord(
-        wa_id=wa_id,
-        current_step=current_step,
-        collected=collected or {},
-        active=True,
-        started_at=_now(),
-        updated_at=_now(),
-    )
-    _owner_setup_flows[wa_id] = record
-    return record
+    async with _session() as s:
+        existing = await s.get(M.OwnerSetup, wa_id)
+        if existing:
+            existing.current_step = current_step
+            existing.collected = collected or {}
+            existing.active = True
+            existing.updated_at = _now()
+            await s.commit()
+            return _setup_to_record(existing)
+        row = M.OwnerSetup(
+            wa_id=wa_id,
+            current_step=current_step,
+            collected=collected or {},
+            active=True,
+            started_at=_now(),
+            updated_at=_now(),
+        )
+        s.add(row)
+        await s.commit()
+        return _setup_to_record(row)
 
 
 async def update_owner_setup(
@@ -441,27 +729,31 @@ async def update_owner_setup(
     collected: dict | None = None,
     active: bool | None = None,
 ) -> OwnerSetupRecord | None:
-    record = _owner_setup_flows.get(wa_id)
-    if not record:
-        return None
-    if current_step is not None:
-        record.current_step = current_step
-    if collected is not None:
-        record.collected = collected
-    if active is not None:
-        record.active = active
-    record.updated_at = _now()
-    return record
+    async with _session() as s:
+        row = await s.get(M.OwnerSetup, wa_id)
+        if not row:
+            return None
+        if current_step is not None:
+            row.current_step = current_step
+        if collected is not None:
+            row.collected = collected
+        if active is not None:
+            row.active = active
+        row.updated_at = _now()
+        await s.commit()
+        return _setup_to_record(row)
 
 
 async def complete_owner_setup(wa_id: str) -> OwnerSetupRecord | None:
-    record = _owner_setup_flows.get(wa_id)
-    if not record:
-        return None
-    record.active = False
-    record.completed_at = _now()
-    record.updated_at = _now()
-    return record
+    async with _session() as s:
+        row = await s.get(M.OwnerSetup, wa_id)
+        if not row:
+            return None
+        row.active = False
+        row.completed_at = _now()
+        row.updated_at = _now()
+        await s.commit()
+        return _setup_to_record(row)
 
 
 # ---------------------------------------------------------------------------
@@ -469,8 +761,28 @@ async def complete_owner_setup(wa_id: str) -> OwnerSetupRecord | None:
 # ---------------------------------------------------------------------------
 
 async def init_state() -> None:
-    """Seed initial state — owner from config."""
-    if config.DEFAULT_OWNER_PHONE not in _staff:
+    """Seed initial state — demo business + owner from config.
+
+    The SQL migration already seeds these for Postgres, but this
+    handles the SQLite fallback case where create_all doesn't run seeds.
+    """
+    # Ensure the demo business exists
+    async with _session() as s:
+        biz = await s.get(M.Business, _DEFAULT_BIZ)
+        if not biz:
+            s.add(M.Business(
+                id=_DEFAULT_BIZ,
+                name=config.DEFAULT_BUSINESS_NAME,
+                type="dealership",
+                vertical=config.DEFAULT_BUSINESS_VERTICAL,
+                owner_phone=config.DEFAULT_OWNER_PHONE,
+                greeting="Welcome to Sharma Motors! How can I help you today?",
+            ))
+            await s.commit()
+
+    # Ensure the owner staff record exists
+    existing = await get_staff(config.DEFAULT_OWNER_PHONE)
+    if not existing:
         await add_staff(
             wa_id=config.DEFAULT_OWNER_PHONE,
             name=config.DEFAULT_OWNER_NAME,
@@ -481,27 +793,46 @@ async def init_state() -> None:
 
 async def reset_state() -> None:
     """Clear all state. Used in tests."""
-    _staff.clear()
-    _customers.clear()
-    _conversations.clear()
-    _messages.clear()
-    _relay_sessions.clear()
-    _escalations.clear()
-    _owner_setup_flows.clear()
+    async with _session() as s:
+        # Delete in FK-safe order
+        await s.execute(delete(M.Message))
+        await s.execute(delete(M.Escalation))
+        await s.execute(delete(M.RelaySession))
+        await s.execute(delete(M.OwnerSetup))
+        await s.execute(delete(M.Conversation))
+        await s.execute(delete(M.Customer))
+        await s.execute(delete(M.Staff))
+        await s.commit()
     _processed_msg_ids.clear()
     _locks.clear()
 
 
 async def reset_customer_state(customer_wa_id: str) -> None:
     """Clear one customer's runtime state without affecting global staff state."""
-    conv = _conversations.pop(customer_wa_id, None)
-    _customers.pop(customer_wa_id, None)
+    async with _session() as s:
+        # Get conversation IDs for this customer
+        result = await s.execute(
+            select(M.Conversation.id).where(
+                M.Conversation.customer_wa_id == customer_wa_id
+            )
+        )
+        conv_ids = [r for r in result.scalars().all()]
+
+        if conv_ids:
+            await s.execute(
+                delete(M.Message).where(M.Message.conversation_id.in_(conv_ids))
+            )
+            await s.execute(
+                delete(M.Escalation).where(M.Escalation.conversation_id.in_(conv_ids))
+            )
+            await s.execute(
+                delete(M.RelaySession).where(M.RelaySession.conversation_id.in_(conv_ids))
+            )
+            await s.execute(
+                delete(M.Conversation).where(M.Conversation.customer_wa_id == customer_wa_id)
+            )
+        await s.execute(
+            delete(M.Customer).where(M.Customer.wa_id == customer_wa_id)
+        )
+        await s.commit()
     _locks.pop(customer_wa_id, None)
-
-    if conv:
-        _messages.pop(conv.id, None)
-        _escalations.pop(conv.id, None)
-
-    for staff_wa_id, session in list(_relay_sessions.items()):
-        if session.customer_wa_id == customer_wa_id:
-            _relay_sessions.pop(staff_wa_id, None)

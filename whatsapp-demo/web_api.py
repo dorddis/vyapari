@@ -22,6 +22,7 @@ from router import dispatch
 from services.message_log import (
     delete_messages_for_wa_id,
     fetch_messages_for_wa_id,
+    log_incoming_message,
 )
 
 router = APIRouter(prefix="/api")
@@ -91,12 +92,17 @@ async def customer_chat(req: ChatRequest) -> dict[str, object]:
         sender_name=req.customer_name,
     )
 
+    await log_incoming_message(incoming, "web_clone")
     reply = await dispatch(incoming)
     if reply:
         await channel.send_text(req.customer_id, reply)
 
     mode = await state.get_conversation_state(req.customer_id)
-    return {"reply": reply, "mode": _to_ui_mode(mode)}
+    return {
+        "reply": reply,
+        "mode": _to_ui_mode(mode),
+        "message_id": incoming.msg_id,
+    }
 
 
 @router.get("/messages/{customer_id}")

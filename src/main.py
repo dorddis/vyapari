@@ -115,6 +115,11 @@ async def serve_frontend():
 
 app.mount("/static", StaticFiles(directory=str(config.STATIC_DIR)), name="static")
 
+# Serve locally uploaded images (fallback when Supabase unavailable)
+_uploads_dir = config.BASE_DIR / "uploads"
+_uploads_dir.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(_uploads_dir)), name="uploads")
+
 
 # ---------------------------------------------------------------------------
 # WhatsApp webhook
@@ -191,10 +196,45 @@ async def _process_and_reply(msg: IncomingMessage):
         await channel.send_typing(msg.wa_id)
         await channel.mark_read(msg.msg_id)
 
+        # Voice note: transcribe audio to text before dispatching
+        if msg.msg_type.value in ("voice", "audio") and msg.media_url:
+            try:
+                from services.voice import transcribe_voice_note
+                import httpx
+
+                log.info(f"Downloading voice note from {msg.media_url[:60]}...")
+                async with httpx.AsyncClient() as http:
+                    headers = {}
+                    if config.WHATSAPP_ACCESS_TOKEN:
+                        headers["Authorization"] = f"Bearer {config.WHATSAPP_ACCESS_TOKEN}"
+                    resp = await http.get(msg.media_url, headers=headers, timeout=30)
+                    resp.raise_for_status()
+                    audio_bytes = resp.content
+
+                mime_type = resp.headers.get("content-type", "audio/ogg")
+                msg.text = await transcribe_voice_note(audio_bytes, mime_type)
+                log.info(f"Voice transcribed for {msg.wa_id}: {msg.text[:80]}...")
+            except Exception as e:
+                log.error(f"Voice transcription failed for {msg.wa_id}: {e}", exc_info=True)
+                await channel.send_text(
+                    msg.wa_id,
+                    "Sorry, I couldn't understand that voice note. Could you type your message instead?",
+                )
+                return
+
         reply = await dispatch(msg)
 
         if reply:
             await channel.send_text(msg.wa_id, reply)
+
+            # Send voice reply if the incoming message was a voice note
+            if msg.msg_type.value in ("voice", "audio") and config.VOICE_REPLY_ENABLED:
+                try:
+                    from services.voice import generate_voice_reply
+                    voice_bytes = await generate_voice_reply(reply)
+                    await channel.send_audio(msg.wa_id, voice_bytes)
+                except Exception as e:
+                    log.warning(f"Voice reply generation failed (text already sent): {e}")
 
     except Exception as e:
         log.error(f"Error processing {msg.wa_id}: {e}", exc_info=True)

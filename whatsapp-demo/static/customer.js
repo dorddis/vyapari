@@ -9,6 +9,7 @@
   const inputEl = document.getElementById("message-input");
   const sendBtn = document.getElementById("send-btn");
   const resetBtn = document.getElementById("reset-chat");
+  const quickActionsEl = document.getElementById("quick-actions");
   const chatHeader = document.getElementById("chat-header");
   const profilePanel = document.getElementById("profile-panel");
   const profileBackBtn = document.getElementById("profile-back");
@@ -299,6 +300,16 @@
   resetBtn.addEventListener("click", () => {
     void resetConversation();
   });
+
+  if (quickActionsEl) {
+    quickActionsEl.addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLButtonElement)) {
+        return;
+      }
+      void sendMessage(target.textContent || "");
+    });
+  }
 
   profileBackBtn.addEventListener("click", closeProfile);
   profileCatalogueBackBtn.addEventListener("click", showProfileInfo);

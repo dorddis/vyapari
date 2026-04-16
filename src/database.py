@@ -5,6 +5,8 @@ Falls back to SQLite (aiosqlite) if DATABASE_URL points to
 an unreachable Postgres or is not set.
 """
 
+import logging
+
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -13,6 +15,8 @@ from sqlalchemy.ext.asyncio import (
 from sqlalchemy.orm import DeclarativeBase
 
 import config
+
+log = logging.getLogger("vyapari.database")
 
 
 class Base(DeclarativeBase):
@@ -84,13 +88,35 @@ async def get_db():
 # ---------------------------------------------------------------------------
 
 async def init_db() -> None:
-    """Create all tables. Call once on startup."""
-    # Ensure ORM models are imported before metadata.create_all().
+    """Create all tables. Call once on startup.
+
+    If the configured Postgres is unreachable (e.g. IPv6-only DNS on
+    Windows, paused Supabase instance), falls back to local SQLite so
+    the app can still start for development.
+    """
+    # Ensure ORM models are imported so metadata.create_all sees them.
     import db_models  # noqa: F401
 
+    global _engine, _async_session
+
     engine = get_engine()
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        log.info(f"Database ready: {config.DATABASE_URL.split('@')[-1].split('/')[0] if '@' in config.DATABASE_URL else 'sqlite'}")
+    except Exception as exc:
+        if "sqlite" in config.DATABASE_URL:
+            raise  # SQLite failures are real errors
+        log.warning(f"Cannot reach Postgres ({exc.__class__.__name__}), falling back to SQLite")
+        await engine.dispose()
+        _engine = None
+        _async_session = None
+        _sqlite_path = config.BASE_DIR / "vyapari.db"
+        config.DATABASE_URL = f"sqlite+aiosqlite:///{_sqlite_path}"
+        engine = get_engine()
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        log.info("Database ready: SQLite (local fallback)")
 
 
 async def close_db() -> None:

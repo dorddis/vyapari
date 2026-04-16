@@ -408,6 +408,26 @@ body {
   font-size: 13px;
 }
 
+.quick-actions {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px 10px;
+  background: var(--wa-surface);
+  border-top: 1px solid #dde2e6;
+}
+
+.chip {
+  border: 1px solid #cbd5dc;
+  background: #fff;
+  color: #15323c;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
 .input-area {
   padding: 8px;
   display: flex;

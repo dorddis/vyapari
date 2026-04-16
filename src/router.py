@@ -32,7 +32,6 @@ from models import (
     RoutingDecision,
     StaffRole,
 )
-from services.message_log import log_incoming_message
 
 log = logging.getLogger("vyapari.router")
 
@@ -111,13 +110,17 @@ async def route_message(msg: IncomingMessage) -> RoutingDecision:
 
     if conv_state == ConversationState.RELAY_ACTIVE:
         relay = await state.get_active_relay_for_customer(msg.wa_id)
-        target = relay.staff_wa_id if relay else None
-        return RoutingDecision(
-            role="customer",
-            action=RoutingAction.RELAY_FORWARD,
-            target_wa_id=target,
-            conversation_state=conv_state,
-        )
+        if relay:
+            return RoutingDecision(
+                role="customer",
+                action=RoutingAction.RELAY_FORWARD,
+                target_wa_id=relay.staff_wa_id,
+                conversation_state=conv_state,
+            )
+        # Orphaned RELAY_ACTIVE state (e.g. after restart) — auto-recover
+        log.warning(f"Orphaned RELAY_ACTIVE for {msg.wa_id}, recovering to ACTIVE")
+        await state.set_conversation_state(msg.wa_id, ConversationState.ACTIVE)
+        conv_state = ConversationState.ACTIVE
 
     # ACTIVE or ESCALATED — customer agent handles both
     return RoutingDecision(
@@ -132,51 +135,99 @@ async def route_message(msg: IncomingMessage) -> RoutingDecision:
 # ---------------------------------------------------------------------------
 
 async def handle_customer_agent(msg: IncomingMessage, conv_state: ConversationState) -> str:
-    """Run Customer Agent via OpenAI Agents SDK."""
-    if not config.OPENAI_API_KEY:
-        return "OpenAI is not configured yet. Set OPENAI_API_KEY to enable agent replies."
+    """Run Customer Agent via OpenAI Agents SDK (Gemini fallback if no key)."""
+    if not config.USE_OPENAI:
+        try:
+            from conversation import get_reply
+            return get_reply(customer_id=msg.wa_id, message=msg.text or "")
+        except Exception as e:
+            log.error(f"Gemini fallback error: {e}")
+            return "Sorry, I'm having trouble right now. Please try again!"
 
+    from vyapari_agents.customer import run_customer_agent
+    response = await run_customer_agent(msg.wa_id, msg.text or "", image_url=msg.media_url)
+
+    # Send car images referenced in the reply
+    if response.images:
+        from channels.base import get_channel
+        channel = get_channel()
+        for img_url in response.images:
+            try:
+                await channel.send_image(msg.wa_id, img_url, caption="")
+            except Exception as e:
+                log.warning(f"Failed to send image {img_url}: {e}")
+
+    # Push escalation notification to owner/assigned staff
+    if response.is_escalation:
+        await _push_escalation_notification(msg.wa_id, response)
+
+    return response.text
+
+
+async def _push_escalation_notification(customer_wa_id: str, response) -> None:
+    """Send escalation notification to the assigned staff or owner."""
+    from channels.base import get_channel
+
+    # Find who to notify: assigned staff, or owner
+    conv = await state.get_conversation(customer_wa_id)
+    notify_wa_id = None
+    if conv and conv.assigned_to:
+        notify_wa_id = conv.assigned_to
+    else:
+        # Notify the owner
+        staff_list = await state.list_staff()
+        for s in staff_list:
+            if s.role.value == "owner":
+                notify_wa_id = s.wa_id
+                break
+
+    if not notify_wa_id:
+        log.warning(f"No one to notify for escalation from {customer_wa_id}")
+        return
+
+    channel = get_channel()
+    notification = (
+        f"ESCALATION\n"
+        f"{response.escalation_summary}\n\n"
+        f"Reply here or open a session to chat with this customer."
+    )
     try:
-        from vyapari_agents.customer import run_customer_agent
-    except ImportError:
-        from agents.customer import run_customer_agent
-    return await run_customer_agent(msg.wa_id, msg.text or "")
+        await channel.send_text(notify_wa_id, notification)
+        log.info(f"Escalation notification sent to {notify_wa_id}")
+    except Exception as e:
+        log.error(f"Failed to send escalation notification: {e}")
 
 
 async def handle_owner_agent(msg: IncomingMessage, staff_name: str | None) -> str:
-    """Run Owner Agent via OpenAI Agents SDK."""
-    try:
-        from services.owner_setup import (
-            handle_owner_setup_message,
-            should_handle_owner_setup,
-        )
+    """Run Owner Agent via OpenAI Agents SDK (Gemini fallback if no key)."""
+    from services.owner_setup import (
+        handle_owner_setup_message,
+        should_handle_owner_setup,
+    )
 
-        if await should_handle_owner_setup(msg.wa_id, msg.text or ""):
-            return await handle_owner_setup_message(msg.wa_id, msg.text or "")
-    except ImportError:
-        # Owner setup flow is optional in stripped-down builds.
-        pass
+    if await should_handle_owner_setup(msg.wa_id, msg.text or ""):
+        return await handle_owner_setup_message(msg.wa_id, msg.text or "")
 
-    if not config.OPENAI_API_KEY:
-        return "OpenAI is not configured yet. Set OPENAI_API_KEY to enable owner replies."
+    if not config.USE_OPENAI:
+        try:
+            from owner_agent import owner_query
+            result = owner_query(msg.text or "")
+            return result.get("text", "")
+        except Exception as e:
+            log.error(f"Gemini owner fallback error: {e}")
+            return "Sorry, something went wrong."
 
-    try:
-        from vyapari_agents.owner import run_owner_agent
-    except ImportError:
-        from agents.owner import run_owner_agent
-    return await run_owner_agent(msg.wa_id, msg.text or "")
+    from vyapari_agents.owner import run_owner_agent
+    return await run_owner_agent(msg.wa_id, msg.text or "", image_url=msg.media_url)
 
 
 async def handle_sdr_agent(msg: IncomingMessage, staff_name: str | None) -> str:
     """Run SDR Agent (same as owner but with limited tools)."""
-    if not config.OPENAI_API_KEY:
+    if not config.USE_OPENAI:
         return "SDR agent requires OpenAI. Set OPENAI_API_KEY in .env."
 
-    try:
-        from vyapari_agents.owner import run_owner_agent
-    except ImportError:
-        from agents.owner import run_owner_agent
-    return await run_owner_agent(msg.wa_id, msg.text or "")
+    from vyapari_agents.owner import run_owner_agent
+    return await run_owner_agent(msg.wa_id, msg.text or "", image_url=msg.media_url)
 
 
 async def handle_relay_forward(msg: IncomingMessage, target_wa_id: str) -> str | None:
@@ -226,13 +277,8 @@ async def handle_relay_command(msg: IncomingMessage, target_wa_id: str) -> str:
         return (
             "Relay commands:\n"
             f"  {config.COMMAND_PREFIX}done - Close session, agent resumes\n"
-            f"  {config.COMMAND_PREFIX}switch [query] - Switch to another customer\n"
-            f"  {config.COMMAND_PREFIX}number - Get customer's phone number\n"
-            f"  {config.COMMAND_PREFIX}status - Current lead status\n"
-            f"  {config.COMMAND_PREFIX}summary - Regenerate conversation summary\n"
-            f"  {config.COMMAND_PREFIX}note [text] - Save internal note\n"
-            f"  {config.COMMAND_PREFIX}wrap - Save session context\n"
-            f"  {config.COMMAND_PREFIX}help - This message"
+            f"  {config.COMMAND_PREFIX}help - This message\n"
+            "\nEverything else you type is forwarded to the customer."
         )
 
     return f"Unknown command: {cmd}. Type {config.COMMAND_PREFIX}help for available commands."
@@ -259,16 +305,14 @@ async def dispatch(msg: IncomingMessage) -> str | None:
         log.info(f"Duplicate message {msg.msg_id}, skipping")
         return None
     await state.mark_message_processed(msg.msg_id)
-    await log_incoming_message(msg, channel=config.CHANNEL_MODE)
 
-    # Ensure customer/conversation records exist
-    customer = await state.get_or_create_customer(
-        msg.wa_id, name=msg.sender_name
-    )
-    conversation = await state.get_or_create_conversation(msg.wa_id)
-
-    # Route
+    # Route first, THEN create records only for customers (not staff)
     decision = await route_message(msg)
+
+    # Only create customer/conversation records for actual customers
+    if decision.role in ("customer", "unknown"):
+        await state.get_or_create_customer(msg.wa_id, name=msg.sender_name)
+        await state.get_or_create_conversation(msg.wa_id)
     log.info(
         f"Routed {msg.wa_id} -> {decision.action.value} "
         f"(role={decision.role}, state={decision.conversation_state})"
