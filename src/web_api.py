@@ -17,8 +17,9 @@ from pydantic import BaseModel
 import config
 import state
 from channels.web_clone.adapter import get_pending_messages, reset_outbox
-from models import IncomingMessage, MessageType
+from models import ConversationState, IncomingMessage, MessageType
 from router import dispatch
+from services.relay import open_relay
 
 log = logging.getLogger("vyapari.web_api")
 
@@ -38,6 +39,19 @@ class ChatRequest(BaseModel):
 class OwnerChatRequest(BaseModel):
     staff_id: str
     message: str
+
+
+class OwnerSendRequest(BaseModel):
+    customer_id: str
+    message: str
+
+
+class OwnerReleaseRequest(BaseModel):
+    customer_id: str
+
+
+class OracleRequest(BaseModel):
+    query: str
 
 
 class ResetRequest(BaseModel):
@@ -112,6 +126,84 @@ async def owner_chat(req: OwnerChatRequest):
     }
 
 
+@router.post("/owner/send")
+async def owner_send(req: OwnerSendRequest):
+    """Owner sends a message to a specific customer via relay.
+
+    Unlike /owner/chat (which uses the owner's wa_id and lets the router
+    decide), this endpoint targets a specific customer. It opens a relay
+    session if one isn't active, then dispatches through the router which
+    routes as RELAY_FORWARD.
+    """
+    owner_wa_id = config.DEFAULT_OWNER_PHONE
+
+    # Ensure customer + conversation exist
+    await state.get_or_create_customer(req.customer_id)
+    await state.get_or_create_conversation(req.customer_id)
+
+    # Open relay if not already active for this customer
+    relay = await state.get_active_relay_for_staff(owner_wa_id)
+    if relay is None or relay.customer_wa_id != req.customer_id:
+        await open_relay(owner_wa_id, req.customer_id)
+
+    # Dispatch through router (routes as RELAY_FORWARD)
+    msg = IncomingMessage(
+        wa_id=owner_wa_id,
+        text=req.message,
+        msg_id=f"web_owner_{uuid4().hex[:12]}",
+        msg_type=MessageType.TEXT,
+        sender_name=config.DEFAULT_OWNER_NAME,
+    )
+    reply = await dispatch(msg)
+
+    conv_state = await state.get_conversation_state(req.customer_id)
+    mode = "escalated" if conv_state == ConversationState.ESCALATED else (
+        "owner" if conv_state == ConversationState.RELAY_ACTIVE else "bot"
+    )
+    return {"status": "ok", "mode": mode, "reply": reply}
+
+
+@router.post("/owner/release")
+async def owner_release(req: OwnerReleaseRequest):
+    """Owner releases relay by dispatching /done through the router."""
+    owner_wa_id = config.DEFAULT_OWNER_PHONE
+
+    msg = IncomingMessage(
+        wa_id=owner_wa_id,
+        text=f"{config.COMMAND_PREFIX}done",
+        msg_id=f"web_owner_cmd_{uuid4().hex[:12]}",
+        msg_type=MessageType.TEXT,
+        sender_name=config.DEFAULT_OWNER_NAME,
+    )
+    await dispatch(msg)
+
+    conv_state = await state.get_conversation_state(req.customer_id)
+    mode = "bot" if conv_state == ConversationState.ACTIVE else conv_state.value
+    return {"status": "ok", "mode": mode}
+
+
+@router.post("/owner/query")
+async def oracle_query(req: OracleRequest):
+    """Owner oracle query -- dispatched through the router as owner agent.
+
+    Note: if a relay is active, the router will forward this as a relay
+    message. The frontend prevents this by using the Oracle tab only
+    when not in an active relay conversation.
+    """
+    owner_wa_id = config.DEFAULT_OWNER_PHONE
+
+    msg = IncomingMessage(
+        wa_id=owner_wa_id,
+        text=req.query,
+        msg_id=f"web_oracle_{uuid4().hex[:12]}",
+        msg_type=MessageType.TEXT,
+        sender_name=config.DEFAULT_OWNER_NAME,
+    )
+    reply = await dispatch(msg)
+
+    return {"text": reply or "No response.", "action": None}
+
+
 @router.get("/conversations")
 async def list_conversations():
     """List all customer conversations for the owner panel."""
@@ -122,15 +214,23 @@ async def list_conversations():
         msgs = await state.get_messages(conv.id) if conv else []
         last_msg = msgs[-1] if msgs else None
 
+        conv_state = ConversationState(conv.state.value) if conv else ConversationState.ACTIVE
+        mode = "escalated" if conv_state == ConversationState.ESCALATED else (
+            "owner" if conv_state == ConversationState.RELAY_ACTIVE else "bot"
+        )
+
         convos.append({
             "customer_id": c.wa_id,
             "customer_name": c.name,
             "lead_status": c.lead_status.value,
-            "conversation_state": conv.state.value if conv else "active",
+            "conversation_state": conv_state.value,
             "last_message": last_msg.content[:80] if last_msg else "",
             "last_message_role": last_msg.role.value if last_msg else "",
             "message_count": len(msgs),
             "last_active": c.last_message_at.isoformat() if c.last_message_at else "",
+            "last_activity": c.last_message_at.isoformat() if c.last_message_at else "",
+            "mode": mode,
+            "has_escalation": conv_state == ConversationState.ESCALATED,
         })
 
     convos.sort(key=lambda x: x["last_active"], reverse=True)
