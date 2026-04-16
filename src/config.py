@@ -53,7 +53,7 @@ if not DATABASE_URL:
 # ---------------------------------------------------------------------------
 # Channel (WhatsApp vs Web Clone fallback)
 # ---------------------------------------------------------------------------
-CHANNEL_MODE = os.getenv("CHANNEL_MODE", "whatsapp")  # "whatsapp" | "web_clone"
+CHANNEL_MODE = os.getenv("CHANNEL_MODE", "web_clone")  # "whatsapp" | "web_clone"
 
 # ---------------------------------------------------------------------------
 # WhatsApp Cloud API

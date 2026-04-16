@@ -1,25 +1,27 @@
-"""REST API endpoints for the web frontend."""
+"""REST API endpoints for the web frontend.
+
+All chat messages go through router.dispatch() — same agents,
+same tools, same state whether it's web or WhatsApp.
+"""
 
 import logging
-from dataclasses import asdict
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
-from message_store import (
-    MessageRole, ConversationMode,
-    get_or_create_conversation, add_message, get_messages,
-    list_conversations, set_mode, get_mode,
-)
-from conversation import get_reply_rich, inject_owner_message
-from owner_agent import owner_query
-from catalogue import mark_car_sold, CATALOGUE
+import state
+from channels.web_clone.adapter import get_pending_messages, reset_outbox
+from models import IncomingMessage, MessageType
+from router import dispatch
 
-log = logging.getLogger("vibecon")
+log = logging.getLogger("vyapari.web_api")
 
 router = APIRouter(prefix="/api")
 
 
-# --- Request/Response models ---
+# ---------------------------------------------------------------------------
+# Request models
+# ---------------------------------------------------------------------------
 
 class ChatRequest(BaseModel):
     customer_id: str
@@ -27,144 +29,183 @@ class ChatRequest(BaseModel):
     customer_name: str | None = None
 
 
-class OwnerSendRequest(BaseModel):
-    customer_id: str
+class OwnerChatRequest(BaseModel):
+    staff_id: str
     message: str
 
 
-class OwnerReleaseRequest(BaseModel):
+class ResetRequest(BaseModel):
     customer_id: str
 
 
-class OracleRequest(BaseModel):
-    query: str
-
-
-# --- Customer endpoints ---
+# ---------------------------------------------------------------------------
+# Customer endpoints
+# ---------------------------------------------------------------------------
 
 @router.post("/chat")
 async def customer_chat(req: ChatRequest):
-    """Customer sends a message. Returns bot reply (or null if owner is active)."""
-    get_or_create_conversation(req.customer_id, req.customer_name)
-
-    # Store customer message
-    add_message(req.customer_id, MessageRole.CUSTOMER, req.message)
-
-    mode = get_mode(req.customer_id)
-
-    # If owner is actively chatting, don't call Gemini
-    if mode == ConversationMode.OWNER:
-        return {
-            "reply": None,
-            "images": [],
-            "is_escalation": False,
-            "escalation_reason": "",
-            "mode": mode.value,
-        }
-
-    # Get AI reply
-    try:
-        result = get_reply_rich(req.customer_id, req.message)
-    except Exception as e:
-        log.error(f"Gemini error: {e}")
-        result = {
-            "text": "Sorry, I'm having trouble right now. Please try again!",
-            "images": [],
-            "is_escalation": False,
-            "escalation_reason": "",
-        }
-
-    # Store bot reply
-    add_message(
-        req.customer_id,
-        MessageRole.BOT,
-        result["text"],
-        images=result["images"],
-        is_escalation=result["is_escalation"],
-        escalation_reason=result.get("escalation_reason", ""),
+    """Customer sends a message. Returns agent reply + any queued messages."""
+    msg = IncomingMessage(
+        wa_id=req.customer_id,
+        text=req.message,
+        msg_id=f"web_{req.customer_id}_{id(req)}",
+        msg_type=MessageType.TEXT,
+        sender_name=req.customer_name,
     )
 
-    # Update mode if escalation detected
-    if result["is_escalation"] and mode != ConversationMode.OWNER:
-        set_mode(req.customer_id, ConversationMode.ESCALATED, result.get("escalation_reason", ""))
+    reply = await dispatch(msg)
+
+    # Collect any messages the agent queued (images, buttons, lists, etc.)
+    pending = get_pending_messages(req.customer_id)
 
     return {
-        "reply": result["text"],
-        "images": result["images"],
-        "is_escalation": result["is_escalation"],
-        "escalation_reason": result.get("escalation_reason", ""),
-        "mode": get_mode(req.customer_id).value,
+        "reply": reply,
+        "messages": pending,
+        "customer_id": req.customer_id,
     }
 
 
-@router.get("/messages/{customer_id}")
-async def get_conversation_messages(customer_id: str, since_id: str | None = None):
-    """Get conversation history. Supports polling with since_id."""
-    messages = get_messages(customer_id, since_id)
-    mode = get_mode(customer_id)
+@router.get("/messages/{wa_id}")
+async def get_messages(wa_id: str, since_id: str | None = None):
+    """Poll for new messages (frontend calls this periodically).
+
+    Returns pending outbox messages + conversation state.
+    """
+    pending = get_pending_messages(wa_id, since_id=since_id)
+    conv = await state.get_conversation(wa_id)
+    conv_state = conv.state.value if conv else "active"
+
     return {
-        "customer_id": customer_id,
-        "mode": mode.value,
-        "messages": [asdict(m) for m in messages],
+        "wa_id": wa_id,
+        "state": conv_state,
+        "messages": pending,
     }
 
 
-# --- Owner endpoints ---
+# ---------------------------------------------------------------------------
+# Owner/Staff endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/owner/chat")
+async def owner_chat(req: OwnerChatRequest):
+    """Owner/SDR sends a message to the agent (or relay)."""
+    msg = IncomingMessage(
+        wa_id=req.staff_id,
+        text=req.message,
+        msg_id=f"web_{req.staff_id}_{id(req)}",
+        msg_type=MessageType.TEXT,
+    )
+
+    reply = await dispatch(msg)
+    pending = get_pending_messages(req.staff_id)
+
+    return {
+        "reply": reply,
+        "messages": pending,
+        "staff_id": req.staff_id,
+    }
+
 
 @router.get("/conversations")
-async def get_conversations():
-    """List all conversations for owner panel."""
-    return {"conversations": list_conversations()}
+async def list_conversations():
+    """List all customer conversations for the owner panel."""
+    customers = await state.list_customers(limit=50)
+    convos = []
+    for c in customers:
+        conv = await state.get_conversation(c.wa_id)
+        msgs = await state.get_messages(conv.id) if conv else []
+        last_msg = msgs[-1] if msgs else None
+
+        convos.append({
+            "customer_id": c.wa_id,
+            "customer_name": c.name,
+            "lead_status": c.lead_status.value,
+            "conversation_state": conv.state.value if conv else "active",
+            "last_message": last_msg.content[:80] if last_msg else "",
+            "last_message_role": last_msg.role.value if last_msg else "",
+            "message_count": len(msgs),
+            "last_active": c.last_message_at.isoformat() if c.last_message_at else "",
+        })
+
+    convos.sort(key=lambda x: x["last_active"], reverse=True)
+    return {"conversations": convos}
 
 
-@router.post("/owner/send")
-async def owner_send(req: OwnerSendRequest):
-    """Owner sends a message to a customer (hijack)."""
-    get_or_create_conversation(req.customer_id)
+@router.get("/conversation/{wa_id}")
+async def get_conversation_detail(wa_id: str):
+    """Get full conversation history for a specific customer."""
+    customer = await state.get_customer(wa_id)
+    conv = await state.get_conversation(wa_id)
 
-    # Switch to owner mode
-    set_mode(req.customer_id, ConversationMode.OWNER)
+    if not customer or not conv:
+        return {"error": "Customer not found", "messages": []}
 
-    # Store owner message
-    msg = add_message(req.customer_id, MessageRole.OWNER, req.message)
+    msgs = await state.get_messages(conv.id)
 
-    # Inject into Gemini history for context continuity
-    inject_owner_message(req.customer_id, req.message)
+    return {
+        "customer_id": wa_id,
+        "customer_name": customer.name,
+        "lead_status": customer.lead_status.value,
+        "conversation_state": conv.state.value,
+        "messages": [
+            {
+                "id": m.id,
+                "role": m.role.value,
+                "content": m.content,
+                "timestamp": m.timestamp.isoformat(),
+                "images": m.images,
+                "is_escalation": m.is_escalation,
+            }
+            for m in msgs
+        ],
+    }
 
-    return {"status": "ok", "message_id": msg.id, "mode": "owner"}
+
+# ---------------------------------------------------------------------------
+# Staff management
+# ---------------------------------------------------------------------------
+
+@router.get("/staff")
+async def list_staff():
+    """List all staff members."""
+    staff_list = await state.list_staff()
+    return {
+        "staff": [
+            {
+                "wa_id": s.wa_id,
+                "name": s.name,
+                "role": s.role.value,
+                "status": s.status.value,
+            }
+            for s in staff_list
+        ]
+    }
 
 
-@router.post("/owner/release")
-async def owner_release(req: OwnerReleaseRequest):
-    """Owner releases conversation back to bot."""
-    set_mode(req.customer_id, ConversationMode.BOT)
-    return {"status": "ok", "mode": "bot"}
+# ---------------------------------------------------------------------------
+# Utility
+# ---------------------------------------------------------------------------
 
+@router.post("/reset")
+async def reset_conversation(req: ResetRequest):
+    """Reset a customer's conversation (for demo purposes)."""
+    from models import ConversationState
 
-@router.post("/owner/query")
-async def oracle_query(req: OracleRequest):
-    """Owner asks the data oracle."""
-    try:
-        result = owner_query(req.query)
-    except Exception as e:
-        log.error(f"Oracle error: {e}")
-        return {"text": "Sorry, something went wrong.", "action": None}
+    conv = await state.get_conversation(req.customer_id)
+    if conv:
+        if conv.id in state._messages:
+            state._messages[conv.id].clear()
+        conv.state = ConversationState.ACTIVE
+        conv.escalation_reason = ""
 
-    # Execute catalogue actions if detected
-    if result.get("action"):
-        action = result["action"]
-        if action["action"] == "mark_sold":
-            sold_car = mark_car_sold(action["car_id"])
-            if sold_car:
-                action["success"] = True
-            else:
-                action["success"] = False
-
-    return result
+    reset_outbox()
+    return {"status": "ok", "customer_id": req.customer_id}
 
 
 @router.get("/catalogue")
 async def get_catalogue():
-    """Get full catalogue (available cars only)."""
+    """Get available cars (for frontend browsing)."""
+    from catalogue import CATALOGUE
+
     available = [c for c in CATALOGUE["cars"] if not c.get("sold")]
     return {"cars": available, "total": len(available)}
