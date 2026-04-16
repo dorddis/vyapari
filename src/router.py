@@ -204,6 +204,8 @@ async def handle_relay_command(msg: IncomingMessage, target_wa_id: str) -> str:
         get_relay_customer_number,
         get_relay_status,
         get_session_context,
+        save_relay_note,
+        save_relay_wrap,
         switch_relay_session,
     )
 
@@ -246,6 +248,12 @@ async def handle_relay_command(msg: IncomingMessage, target_wa_id: str) -> str:
         if not arg_text:
             return f"Usage: {config.COMMAND_PREFIX}switch [customer name or car query]"
         return await switch_relay_session(msg.wa_id, arg_text)
+
+    if cmd == f"{config.COMMAND_PREFIX}note":
+        return await save_relay_note(msg.wa_id, arg_text)
+
+    if cmd == f"{config.COMMAND_PREFIX}wrap":
+        return await save_relay_wrap(msg.wa_id)
 
     return f"Unknown command: {cmd}. Type {config.COMMAND_PREFIX}help for available commands."
 

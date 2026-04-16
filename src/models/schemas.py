@@ -167,6 +167,17 @@ class StaffEscalationNotificationRecord(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class InternalNoteRecord(BaseModel):
+    id: str
+    conversation_id: str
+    author_wa_id: str
+    author_name: str
+    author_role: str
+    content: str
+    note_type: str = "manual"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class PendingOwnerActionRecord(BaseModel):
     staff_wa_id: str
     action_name: str

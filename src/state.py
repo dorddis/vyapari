@@ -15,6 +15,7 @@ from models import (
     ConversationState,
     CustomerRecord,
     EscalationRecord,
+    InternalNoteRecord,
     LeadStatus,
     MessageRecord,
     MessageRole,
@@ -35,6 +36,7 @@ _staff: dict[str, StaffRecord] = {}
 _customers: dict[str, CustomerRecord] = {}
 _conversations: dict[str, ConversationRecord] = {}  # keyed by customer_wa_id
 _messages: dict[str, list[MessageRecord]] = {}  # keyed by conversation_id
+_internal_notes: dict[str, list[InternalNoteRecord]] = {}  # keyed by conversation_id
 _relay_sessions: dict[str, RelaySessionRecord] = {}  # keyed by staff_wa_id
 _escalations: dict[str, list[EscalationRecord]] = {}  # keyed by conversation_id
 _staff_escalation_notifications: dict[str, list[StaffEscalationNotificationRecord]] = {}
@@ -280,6 +282,42 @@ async def get_last_customer_message_time(customer_wa_id: str) -> datetime | None
 
 
 # ---------------------------------------------------------------------------
+# Internal notes
+# ---------------------------------------------------------------------------
+
+async def add_internal_note(
+    conversation_id: str,
+    author_wa_id: str,
+    author_name: str,
+    author_role: str,
+    content: str,
+    note_type: str = "manual",
+) -> InternalNoteRecord:
+    note = InternalNoteRecord(
+        id=str(uuid4()),
+        conversation_id=conversation_id,
+        author_wa_id=author_wa_id,
+        author_name=author_name,
+        author_role=author_role,
+        content=content,
+        note_type=note_type,
+        created_at=_now(),
+    )
+    _internal_notes.setdefault(conversation_id, []).append(note)
+    return note
+
+
+async def get_internal_notes(
+    conversation_id: str,
+    limit: int | None = None,
+) -> list[InternalNoteRecord]:
+    notes = _internal_notes.get(conversation_id, [])
+    if limit:
+        return notes[-limit:]
+    return list(notes)
+
+
+# ---------------------------------------------------------------------------
 # Relay Sessions
 # ---------------------------------------------------------------------------
 
@@ -487,6 +525,7 @@ async def reset_state() -> None:
     _customers.clear()
     _conversations.clear()
     _messages.clear()
+    _internal_notes.clear()
     _relay_sessions.clear()
     _escalations.clear()
     _staff_escalation_notifications.clear()

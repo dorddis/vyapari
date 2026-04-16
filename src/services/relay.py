@@ -180,6 +180,57 @@ async def switch_relay_session(staff_wa_id: str, query: str) -> str:
     return f"{close_message}\n\n{open_message}"
 
 
+async def save_relay_note(staff_wa_id: str, note_text: str) -> str:
+    """Save an internal note for the active relay conversation."""
+    session, customer = await get_active_session_customer(staff_wa_id)
+    if not session or not customer:
+        return "No active session."
+    if not note_text.strip():
+        return "Usage: /note [text]"
+
+    staff = await state.get_staff(staff_wa_id)
+    staff_name = staff.name if staff else "Staff"
+    staff_role = staff.role.value if staff else "staff"
+    await state.add_internal_note(
+        conversation_id=session.conversation_id,
+        author_wa_id=staff_wa_id,
+        author_name=staff_name,
+        author_role=staff_role,
+        content=note_text.strip(),
+        note_type="manual",
+    )
+    return f"Saved internal note for {customer.name}."
+
+
+async def save_relay_wrap(staff_wa_id: str) -> str:
+    """Save a compact session wrap as an internal note."""
+    session, customer = await get_active_session_customer(staff_wa_id)
+    if not session or not customer:
+        return "No active session."
+
+    context = await get_session_context(customer.wa_id, last_n=3)
+    recent_notes = await state.get_internal_notes(session.conversation_id, limit=3)
+    note_lines = []
+    if recent_notes:
+        note_lines.append("Recent internal notes:")
+        for note in recent_notes:
+            note_lines.append(f"- {note.author_name}: {note.content}")
+
+    wrap_text = context
+    if note_lines:
+        wrap_text = f"{context}\n\n" + "\n".join(note_lines)
+
+    await state.add_internal_note(
+        conversation_id=session.conversation_id,
+        author_wa_id=staff_wa_id,
+        author_name="Vyapari Relay",
+        author_role="system",
+        content=wrap_text,
+        note_type="wrap",
+    )
+    return f"Saved session wrap for {customer.name}."
+
+
 # ---------------------------------------------------------------------------
 # Message forwarding
 # ---------------------------------------------------------------------------
