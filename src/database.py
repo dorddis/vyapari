@@ -32,6 +32,7 @@ def _build_engine():
     """Create the async engine from config.DATABASE_URL."""
     url = config.DATABASE_URL
     is_pg = "postgresql" in url
+    is_pooler = "pooler.supabase.com" in url or ":6543/" in url
 
     kwargs = {
         "echo": config.DATABASE_ECHO,
@@ -40,6 +41,10 @@ def _build_engine():
     if is_pg:
         kwargs["pool_size"] = config.DATABASE_POOL_SIZE
         kwargs["max_overflow"] = config.DATABASE_MAX_OVERFLOW
+    if is_pooler:
+        # Supabase transaction pooler (PgBouncer) does not support prepared
+        # statements in the default asyncpg cache mode.
+        kwargs["connect_args"] = {"statement_cache_size": 0}
 
     return create_async_engine(url, **kwargs)
 
