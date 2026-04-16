@@ -57,6 +57,8 @@ def tool_search_catalogue(
             "km_driven": car["km_driven"],
             "color": car["color"],
             "highlight": car.get("highlights", [""])[0] if car.get("highlights") else "",
+            "image_url": car.get("image_url", ""),
+            "images": car.get("images", []),
         })
 
     return json.dumps({

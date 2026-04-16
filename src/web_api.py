@@ -11,8 +11,9 @@ from pydantic import BaseModel
 
 import state
 from channels.web_clone.adapter import get_pending_messages, reset_outbox
-from models import IncomingMessage, MessageType
+from models import IncomingMessage, MessageRole, MessageType
 from router import dispatch
+from services.customer_experience import build_source_aware_greeting
 
 log = logging.getLogger("vyapari.web_api")
 
@@ -27,6 +28,15 @@ class ChatRequest(BaseModel):
     customer_id: str
     message: str
     customer_name: str | None = None
+    source: str | None = None
+
+
+class ChatStartRequest(BaseModel):
+    customer_id: str
+    customer_name: str | None = None
+    source: str | None = None
+    source_car: str | None = None
+    source_video: str | None = None
 
 
 class OwnerChatRequest(BaseModel):
@@ -45,6 +55,12 @@ class ResetRequest(BaseModel):
 @router.post("/chat")
 async def customer_chat(req: ChatRequest):
     """Customer sends a message. Returns agent reply + any queued messages."""
+    await state.get_or_create_customer(
+        req.customer_id,
+        name=req.customer_name,
+        source=req.source,
+    )
+
     msg = IncomingMessage(
         wa_id=req.customer_id,
         text=req.message,
@@ -62,6 +78,43 @@ async def customer_chat(req: ChatRequest):
         "reply": reply,
         "messages": pending,
         "customer_id": req.customer_id,
+    }
+
+
+@router.post("/chat/start")
+async def customer_chat_start(req: ChatStartRequest):
+    """Start a web demo customer chat with a source-aware greeting."""
+    customer = await state.get_or_create_customer(
+        req.customer_id,
+        name=req.customer_name,
+        source=req.source,
+    )
+    conversation = await state.get_or_create_conversation(req.customer_id)
+    existing_messages = await state.get_messages(conversation.id)
+    if existing_messages:
+        return {
+            "reply": None,
+            "images": [],
+            "messages": get_pending_messages(req.customer_id),
+            "customer_id": req.customer_id,
+        }
+
+    reply, images = build_source_aware_greeting(
+        source_car=req.source_car,
+        source_video=req.source_video,
+    )
+    await state.add_message(
+        conversation.id,
+        MessageRole.AGENT,
+        reply,
+        images=images,
+    )
+
+    return {
+        "reply": reply,
+        "images": images,
+        "messages": [],
+        "customer_id": customer.wa_id,
     }
 
 

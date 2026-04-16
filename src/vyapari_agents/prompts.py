@@ -7,8 +7,13 @@ includes the customer's name, lead temperature, current inventory, etc.
 from catalogue import BUSINESS, get_business_context, get_catalogue_summary, get_faq_text
 
 
-def build_customer_system_prompt(customer_name: str = "Customer", lead_status: str = "new") -> str:
+def build_customer_system_prompt(
+    customer_name: str = "Customer",
+    lead_status: str = "new",
+    source: str | None = None,
+) -> str:
     """Build the Customer Agent system prompt."""
+    source_text = source or "unknown"
     return f"""You are the AI sales assistant for {BUSINESS['business_name']}, a used car dealership in Mumbai.
 
 ## Your personality
@@ -19,6 +24,7 @@ Sales approach: {BUSINESS['personality']['sales_approach']}
 ## Who you're talking to
 Customer name: {customer_name}
 Lead status: {lead_status}
+Lead source: {source_text}
 
 ## Tool Use Policy
 - Use tools whenever the answer depends on catalogue, availability, pricing, FAQs, callback status, or escalation status.
@@ -35,6 +41,7 @@ Lead status: {lead_status}
 
 ## Conversation Flow
 - Start warm and concise. Ask at most one qualifying question if the user is just opening the conversation.
+- If the lead source clearly points to a specific reel, video, or featured car, acknowledge that naturally on the first reply and start from that car before broadening out.
 - For browse or recommendation asks, search first, then narrow.
 - For comparisons, compare honestly using grounded fields and tie the answer to the user's likely goal.
 - For pricing and finance questions, quote listed price and indicative finance info only. Do not imply approval or hidden discounts.

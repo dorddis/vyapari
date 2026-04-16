@@ -94,6 +94,57 @@
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
+  function renderOutboundMessage(msg) {
+    if (!msg) return;
+
+    if (msg.type === "typing") {
+      addTypingIndicator();
+      setTimeout(removeTypingIndicator, 1200);
+      return;
+    }
+
+    if (msg.type === "text") {
+      messagesEl.appendChild(
+        createBubble("bot", (msg.content && msg.content.body) || "", msg.timestamp, [], false)
+      );
+      scrollDown();
+      return;
+    }
+
+    if (msg.type === "image") {
+      messagesEl.appendChild(
+        createBubble(
+          "bot",
+          (msg.content && msg.content.caption) || "",
+          msg.timestamp,
+          [(msg.content && msg.content.url) || ""].filter(Boolean),
+          false
+        )
+      );
+      scrollDown();
+      return;
+    }
+
+    if (msg.type === "buttons" || msg.type === "list") {
+      messagesEl.appendChild(
+        createBubble(
+          "bot",
+          (msg.content && msg.content.body) || "",
+          msg.timestamp,
+          msg.content && msg.content.image_url ? [msg.content.image_url] : [],
+          false
+        )
+      );
+      scrollDown();
+    }
+  }
+
+  function renderQueuedMessages(messages) {
+    if (!messages || messages.length === 0) return;
+    messages.forEach(renderOutboundMessage);
+    lastMessageId = messages[messages.length - 1].id;
+  }
+
   // --- Pre-chat → Chat transition ---
 
   prechatBtn.addEventListener("click", function () {
@@ -107,24 +158,39 @@
     if (chatStarted) return;
     chatStarted = true;
 
-    // Source-aware greeting — bot knows which video brought them
     addSystemMessage("Messages are end-to-end encrypted.");
 
-    // Small delay to feel natural
-    setTimeout(function () {
-      messagesEl.appendChild(
-        createBubble(
-          "bot",
-          "Hey! Saw you checking out our *" + entrySource.car + "* video \n\n" +
-          "That one's a beauty — single owner, diesel, just *" + entrySource.price + "*. " +
-          "Want the full details, or are you looking at other options too?",
-          new Date().toISOString(),
-          ["https://upload.wikimedia.org/wikipedia/commons/thumb/6/63/2020_Hyundai_Creta_SX_%28O%29_1.5_CRDi_%28front%29.png/800px-2020_Hyundai_Creta_SX_%28O%29_1.5_CRDi_%28front%29.png"],
-          false
-        )
-      );
-      scrollDown();
-    }, 600);
+    statusEl.textContent = "typing...";
+    addTypingIndicator();
+
+    fetch("/api/chat/start", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        customer_id: CUSTOMER_ID,
+        customer_name: "Customer (from Creta video)",
+        source: "creta_reel_apr16",
+        source_car: entrySource.car,
+        source_video: entrySource.video,
+      }),
+    })
+      .then(function (resp) { return resp.json(); })
+      .then(function (data) {
+        removeTypingIndicator();
+        statusEl.textContent = "online";
+        if (data.reply) {
+          messagesEl.appendChild(
+            createBubble("bot", data.reply, new Date().toISOString(), data.images || [], false)
+          );
+          scrollDown();
+        }
+        renderQueuedMessages(data.messages || []);
+      })
+      .catch(function () {
+        removeTypingIndicator();
+        statusEl.textContent = "online";
+        addSystemMessage("Connection error. Please try again.");
+      });
 
     // Start polling
     setInterval(pollMessages, 2000);
@@ -155,6 +221,7 @@
           customer_id: CUSTOMER_ID,
           message: text,
           customer_name: "Customer (from Creta video)",
+          source: "creta_reel_apr16",
         }),
       });
       var data = await resp.json();
@@ -170,6 +237,7 @@
           addSystemMessage("Connecting you with our team...", "escalation-alert");
         }
       }
+      renderQueuedMessages(data.messages || []);
       scrollDown();
     } catch (err) {
       removeTypingIndicator();
@@ -191,13 +259,7 @@
       var data = await resp.json();
 
       if (data.messages && data.messages.length > 0) {
-        data.messages.forEach(function (msg) {
-          if (msg.role === "owner") {
-            messagesEl.appendChild(createBubble("bot", msg.text, msg.timestamp, msg.images || [], false));
-            scrollDown();
-          }
-        });
-        lastMessageId = data.messages[data.messages.length - 1].id;
+        renderQueuedMessages(data.messages);
       }
     } catch (err) { /* silent */ }
   }

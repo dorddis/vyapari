@@ -38,7 +38,8 @@ log = logging.getLogger("vyapari.agents.customer")
 # ---------------------------------------------------------------------------
 
 @function_tool
-def search_catalogue(
+async def search_catalogue(
+    ctx: RunContextWrapper[CustomerContext],
     max_price: float | None = None,
     min_price: float | None = None,
     fuel_type: str | None = None,
@@ -47,19 +48,59 @@ def search_catalogue(
     max_km: int | None = None,
 ) -> str:
     """Search the car catalogue with optional filters. Returns up to 5 matching cars."""
-    return tool_search_catalogue(max_price, min_price, fuel_type, make, transmission, max_km)
+    from services.customer_experience import queue_catalogue_result_media
+
+    result = tool_search_catalogue(
+        max_price,
+        min_price,
+        fuel_type,
+        make,
+        transmission,
+        max_km,
+    )
+    try:
+        payload = json.loads(result)
+    except json.JSONDecodeError:
+        return result
+
+    if payload.get("success"):
+        await queue_catalogue_result_media(ctx.context.customer_id, payload.get("data", []))
+    return result
 
 
 @function_tool
-def get_item_details(item_id: int) -> str:
+async def get_item_details(
+    ctx: RunContextWrapper[CustomerContext],
+    item_id: int,
+) -> str:
     """Get full details for a specific car by its ID number."""
-    return tool_get_item_details(item_id)
+    from services.customer_experience import queue_catalogue_result_media
+
+    result = tool_get_item_details(item_id)
+    try:
+        payload = json.loads(result)
+    except json.JSONDecodeError:
+        return result
+
+    if payload.get("success") and payload.get("data"):
+        await queue_catalogue_result_media(ctx.context.customer_id, [payload["data"]], limit=1)
+    return result
 
 
 @function_tool
-def compare_items(item_id_1: int, item_id_2: int) -> str:
+async def compare_items(
+    ctx: RunContextWrapper[CustomerContext],
+    item_id_1: int,
+    item_id_2: int,
+) -> str:
     """Compare two cars side by side by their ID numbers."""
-    return tool_compare_items(item_id_1, item_id_2)
+    from catalogue import get_car_detail
+    from services.customer_experience import queue_catalogue_result_media
+
+    result = tool_compare_items(item_id_1, item_id_2)
+    cars = [get_car_detail(item_id_1), get_car_detail(item_id_2)]
+    await queue_catalogue_result_media(ctx.context.customer_id, cars, limit=2)
+    return result
 
 
 @function_tool
@@ -121,6 +162,7 @@ def _build_instructions(ctx: RunContextWrapper[CustomerContext], agent: Agent) -
     return build_customer_system_prompt(
         customer_name=ctx.context.name,
         lead_status=ctx.context.lead_status,
+        source=ctx.context.source,
     )
 
 
