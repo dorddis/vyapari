@@ -19,6 +19,11 @@ Thumbs.db
 .idea/
 .vscode/
 
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+
 # Database
 *.db
 *.sqlite3
