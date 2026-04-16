@@ -1,8 +1,8 @@
 # Vyapari Agent - Live Status
 
-**Last Updated:** 2026-04-16 21:30 IST
-**Master State:** 45/45 tests passing, stable
-**Current Commit:** 8f50504
+**Last Updated:** 2026-04-16 22:00 IST
+**Master State:** 53/53 tests passing, stable
+**Current Commit:** 6f37b61
 
 ---
 
@@ -67,43 +67,24 @@
 
 ## What's NOT Done (Blocking Demo)
 
-### 1. Missing API Endpoints in `web_api.py` (Agent B needs to commit)
+### 1. ~~Missing API Endpoints~~ DONE (6f37b61)
+`POST /api/owner/send`, `/api/owner/release`, `/api/owner/query` committed to master. All route through `dispatch()`.
 
-**STATUS: Code written + E2E tested but NOT YET COMMITTED to master.**
+### 2. ~~Remaining `state._dict` access~~ DONE (2f362d6)
+Agent A fixed `leads.py` and `staff.py` in commit 2f362d6.
 
-The frontend (`owner.js`) calls these endpoints which exist in Agent B's local changes but were lost in a branch merge:
+### 3. Frontend fixes needed (Mayani's files -- DO NOT TOUCH)
 
-| Endpoint | Purpose | Frontend uses it |
-|----------|---------|-----------------|
-| `POST /api/owner/send` | Owner sends relay message to customer | `owner.js:261` |
-| `POST /api/owner/release` | Owner releases relay (/done) | `owner.js:239` |
-| `POST /api/owner/query` | Owner oracle query | `owner.js:304` |
+These are documented for Mayani to fix when she rebases `codex/dashboard-frontend`:
 
-**Agent B will commit these.** Agent A should NOT edit `web_api.py` until this is done.
+**`owner.js` -- `openConversation()` must load full DB history:**
+- Currently: `GET /api/messages/{customerId}` (outbox only, empty on page load)
+- Should be: `GET /api/conversation/{customerId}` (full DB history)
+- Map `role === "agent"` to display as "bot"
 
-### 2. `owner.js` needs to load history from DB
-
-**STATUS: Code written but NOT YET COMMITTED.**
-
-`openConversation()` in `owner.js` fetches `/api/messages/{id}` (outbox-only) but needs to fetch `/api/conversation/{id}` (full DB history). Agent B has the fix ready.
-
-**This touches `static/owner.js` (Mayani's ownership).** Sid to approve before commit.
-
-### 3. Remaining `state._dict` access in agent tools (Agent A's files)
-
-3 files still directly access internal dicts that no longer exist in DB-backed state.py:
-
-| File | Line | Code | Fix Needed |
-|------|------|------|------------|
-| `vyapari_agents/tools/leads.py` | 107 | `state._conversations` | Use `state.list_customers()` count |
-| `vyapari_agents/tools/leads.py` | 108 | `state._messages` | Remove or use DB query |
-| `vyapari_agents/tools/staff.py` | 28 | `state._staff.get(wa_id)` | Use `state.get_staff_raw(wa_id)` |
-
-**These will crash at runtime** if those tools are called. Agent A owns these files.
-
-### 4. `customer.js` polling fix
-
-`pollMessages()` filters `msg.role === "owner"` which misses bot messages from outbox. Agent B has fix ready (`msg.role !== "customer"` instead). Needs Sid approval since it's `static/` (Mayani's ownership).
+**`customer.js` -- polling filter too narrow:**
+- Currently: `if (msg.role === "owner")` (misses bot outbox messages)
+- Should be: `if (msg.role !== "customer")` (shows all non-customer messages)
 
 ---
 
@@ -114,7 +95,7 @@ The frontend (`owner.js`) calls these endpoints which exist in Agent B's local c
 | #1 | dev-rowl | Rahul | Stale | Close it. Cherry-picked already. |
 | #2 | codex/dashboard-frontend | Mayani | Active | React dashboard. Rebase onto master. |
 | #3 | feat/evals-prompt-tuning | Agent | REVIEWED | Cherry-pick eval tests only. Code regresses fixes. |
-| #4 | feat/voice-notes | Agent | New | Voice STT+TTS. Review needed. |
+| #4 | feat/voice-notes | Agent | MERGED | Voice STT+TTS merged to master. |
 
 ---
 
@@ -130,21 +111,23 @@ The frontend (`owner.js`) calls these endpoints which exist in Agent B's local c
 ## Requested Changes (Cross-Agent)
 
 ### Agent B (DB/infra) will do:
-- [ ] Commit `web_api.py` with 3 missing owner endpoints (owner/send, owner/release, owner/query)
-- [ ] Commit `owner.js` fix (load full DB history via `/api/conversation/`)
-- [ ] Commit `customer.js` polling fix
+- [x] ~~Commit `web_api.py` with 3 missing owner endpoints~~ DONE (6f37b61)
 - [ ] Add `update_customer_interested_cars(wa_id, cars)` to state.py
-- [ ] **Needs Sid's OK** before touching `static/*` files (Mayani's ownership)
+- NOT touching `static/*` -- documented for Mayani instead
 
 ### Agent A (agents/routing) will do:
-- [ ] Fix `vyapari_agents/tools/leads.py:107-108` -- replace `state._conversations` / `state._messages`
-- [ ] Fix `vyapari_agents/tools/staff.py:28` -- replace `state._staff.get()` with `state.get_staff_raw()`
+- [x] ~~Fix `vyapari_agents/tools/leads.py:107-108`~~ DONE (2f362d6)
+- [x] ~~Fix `vyapari_agents/tools/staff.py:28`~~ DONE (2f362d6)
 - [ ] Cherry-pick eval tests from PR #3
 - [ ] Fix mark_sold prompt in owner agent
 - [ ] Fix escalation notification check
 
-### Mayani:
+### Mayani (frontend):
 - [ ] Rebase codex/dashboard-frontend onto current master
+- [ ] Fix `owner.js:openConversation()` to use `GET /api/conversation/{id}` for full DB history
+- [ ] Fix `customer.js:pollMessages()` filter: `msg.role !== "customer"` instead of `=== "owner"`
+- [ ] Owner conversation detail response now includes `text` field alongside `content` (both have same value)
+- [ ] `GET /api/conversations` now returns `mode`, `has_escalation`, `last_activity` fields
 - [ ] Open PR when ready
 
 ### Rahul:
