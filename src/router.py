@@ -110,13 +110,17 @@ async def route_message(msg: IncomingMessage) -> RoutingDecision:
 
     if conv_state == ConversationState.RELAY_ACTIVE:
         relay = await state.get_active_relay_for_customer(msg.wa_id)
-        target = relay.staff_wa_id if relay else None
-        return RoutingDecision(
-            role="customer",
-            action=RoutingAction.RELAY_FORWARD,
-            target_wa_id=target,
-            conversation_state=conv_state,
-        )
+        if relay:
+            return RoutingDecision(
+                role="customer",
+                action=RoutingAction.RELAY_FORWARD,
+                target_wa_id=relay.staff_wa_id,
+                conversation_state=conv_state,
+            )
+        # Orphaned RELAY_ACTIVE state (e.g. after restart) — auto-recover
+        log.warning(f"Orphaned RELAY_ACTIVE for {msg.wa_id}, recovering to ACTIVE")
+        await state.set_conversation_state(msg.wa_id, ConversationState.ACTIVE)
+        conv_state = ConversationState.ACTIVE
 
     # ACTIVE or ESCALATED — customer agent handles both
     return RoutingDecision(
@@ -146,6 +150,14 @@ async def handle_customer_agent(msg: IncomingMessage, conv_state: ConversationSt
 
 async def handle_owner_agent(msg: IncomingMessage, staff_name: str | None) -> str:
     """Run Owner Agent via OpenAI Agents SDK (Gemini fallback if no key)."""
+    from services.owner_setup import (
+        handle_owner_setup_message,
+        should_handle_owner_setup,
+    )
+
+    if await should_handle_owner_setup(msg.wa_id, msg.text or ""):
+        return await handle_owner_setup_message(msg.wa_id, msg.text or "")
+
     if not config.USE_OPENAI:
         try:
             from owner_agent import owner_query
@@ -215,13 +227,8 @@ async def handle_relay_command(msg: IncomingMessage, target_wa_id: str) -> str:
         return (
             "Relay commands:\n"
             f"  {config.COMMAND_PREFIX}done - Close session, agent resumes\n"
-            f"  {config.COMMAND_PREFIX}switch [query] - Switch to another customer\n"
-            f"  {config.COMMAND_PREFIX}number - Get customer's phone number\n"
-            f"  {config.COMMAND_PREFIX}status - Current lead status\n"
-            f"  {config.COMMAND_PREFIX}summary - Regenerate conversation summary\n"
-            f"  {config.COMMAND_PREFIX}note [text] - Save internal note\n"
-            f"  {config.COMMAND_PREFIX}wrap - Save session context\n"
-            f"  {config.COMMAND_PREFIX}help - This message"
+            f"  {config.COMMAND_PREFIX}help - This message\n"
+            "\nEverything else you type is forwarded to the customer."
         )
 
     return f"Unknown command: {cmd}. Type {config.COMMAND_PREFIX}help for available commands."
@@ -249,14 +256,13 @@ async def dispatch(msg: IncomingMessage) -> str | None:
         return None
     await state.mark_message_processed(msg.msg_id)
 
-    # Ensure customer/conversation records exist
-    customer = await state.get_or_create_customer(
-        msg.wa_id, name=msg.sender_name
-    )
-    conversation = await state.get_or_create_conversation(msg.wa_id)
-
-    # Route
+    # Route first, THEN create records only for customers (not staff)
     decision = await route_message(msg)
+
+    # Only create customer/conversation records for actual customers
+    if decision.role in ("customer", "unknown"):
+        await state.get_or_create_customer(msg.wa_id, name=msg.sender_name)
+        await state.get_or_create_conversation(msg.wa_id)
     log.info(
         f"Routed {msg.wa_id} -> {decision.action.value} "
         f"(role={decision.role}, state={decision.conversation_state})"

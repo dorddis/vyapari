@@ -200,7 +200,7 @@ async def run_customer_agent(wa_id: str, message: str) -> str:
     await state.add_message(conversation.id, MessageRole.AGENT, reply)
 
     # Post-run escalation detection
-    should_escalate, reason = detect_escalation(message, reply)
+    should_escalate, reason = await detect_escalation(message, reply)
     if should_escalate and conversation.state.value != "escalated":
         from models import ConversationState
         await state.set_conversation_state(wa_id, ConversationState.ESCALATED, reason)

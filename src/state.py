@@ -19,6 +19,7 @@ from models import (
     MessageRecord,
     MessageRole,
     MessageType,
+    OwnerSetupRecord,
     RelaySessionRecord,
     RelaySessionStatus,
     StaffRecord,
@@ -35,7 +36,9 @@ _conversations: dict[str, ConversationRecord] = {}  # keyed by customer_wa_id
 _messages: dict[str, list[MessageRecord]] = {}  # keyed by conversation_id
 _relay_sessions: dict[str, RelaySessionRecord] = {}  # keyed by staff_wa_id
 _escalations: dict[str, list[EscalationRecord]] = {}  # keyed by conversation_id
-_processed_msg_ids: set[str] = set()  # for webhook idempotency
+_owner_setup_flows: dict[str, OwnerSetupRecord] = {}  # keyed by owner wa_id
+_processed_msg_ids: dict[str, float] = {}  # msg_id -> timestamp, for webhook idempotency
+_MAX_PROCESSED_IDS = 10000  # cap to prevent unbounded growth
 
 # Per-conversation locks to prevent race conditions
 _locks: dict[str, asyncio.Lock] = {}
@@ -61,8 +64,14 @@ async def is_message_processed(msg_id: str) -> bool:
 
 
 async def mark_message_processed(msg_id: str) -> None:
-    """Mark a webhook message ID as processed."""
-    _processed_msg_ids.add(msg_id)
+    """Mark a webhook message ID as processed. Evicts oldest if over cap."""
+    import time
+    _processed_msg_ids[msg_id] = time.time()
+    # Evict oldest entries if over cap
+    if len(_processed_msg_ids) > _MAX_PROCESSED_IDS:
+        sorted_ids = sorted(_processed_msg_ids.items(), key=lambda x: x[1])
+        for old_id, _ in sorted_ids[:len(sorted_ids) - _MAX_PROCESSED_IDS]:
+            del _processed_msg_ids[old_id]
 
 
 # ---------------------------------------------------------------------------
@@ -282,30 +291,44 @@ async def get_last_customer_message_time(customer_wa_id: str) -> datetime | None
 async def create_relay_session(
     staff_wa_id: str, customer_wa_id: str
 ) -> RelaySessionRecord | None:
-    """Create a relay session. Returns None if customer is already in a relay."""
-    # Check if customer is already in a relay
-    for session in _relay_sessions.values():
-        if (
-            session.customer_wa_id == customer_wa_id
-            and session.status == RelaySessionStatus.ACTIVE
-        ):
-            return None  # lock — another staff member holds this customer
+    """Create a relay session. Returns None if customer is already in a relay.
 
-    conv = _conversations.get(customer_wa_id)
-    if not conv:
-        return None
+    Uses asyncio.Lock per customer to prevent check-then-act race conditions.
+    Closes any existing session for this staff member before creating a new one.
+    """
+    async with _get_lock(f"relay_{customer_wa_id}"):
+        # Check if customer is already in a relay with ANOTHER staff member
+        for other_staff, session in _relay_sessions.items():
+            if (
+                session.customer_wa_id == customer_wa_id
+                and session.status == RelaySessionStatus.ACTIVE
+                and other_staff != staff_wa_id
+            ):
+                return None  # lock — another staff member holds this customer
 
-    session = RelaySessionRecord(
-        id=str(uuid4()),
-        staff_wa_id=staff_wa_id,
-        customer_wa_id=customer_wa_id,
-        conversation_id=conv.id,
-        started_at=_now(),
-        last_active=_now(),
-    )
-    _relay_sessions[staff_wa_id] = session
-    await set_conversation_state(customer_wa_id, ConversationState.RELAY_ACTIVE)
-    return session
+        # Close any existing session for this staff member (prevent orphans)
+        existing = _relay_sessions.get(staff_wa_id)
+        if existing and existing.status == RelaySessionStatus.ACTIVE:
+            existing.status = RelaySessionStatus.CLOSED
+            await set_conversation_state(
+                existing.customer_wa_id, ConversationState.ACTIVE
+            )
+
+        conv = _conversations.get(customer_wa_id)
+        if not conv:
+            return None
+
+        session = RelaySessionRecord(
+            id=str(uuid4()),
+            staff_wa_id=staff_wa_id,
+            customer_wa_id=customer_wa_id,
+            conversation_id=conv.id,
+            started_at=_now(),
+            last_active=_now(),
+        )
+        _relay_sessions[staff_wa_id] = session
+        await set_conversation_state(customer_wa_id, ConversationState.RELAY_ACTIVE)
+        return session
 
 
 async def get_active_relay_for_staff(staff_wa_id: str) -> RelaySessionRecord | None:
@@ -391,6 +414,61 @@ async def add_escalation(
 
 
 # ---------------------------------------------------------------------------
+# Owner setup / onboarding
+# ---------------------------------------------------------------------------
+
+async def get_owner_setup(wa_id: str) -> OwnerSetupRecord | None:
+    return _owner_setup_flows.get(wa_id)
+
+
+async def start_owner_setup(
+    wa_id: str,
+    current_step: str = "business_name",
+    collected: dict | None = None,
+) -> OwnerSetupRecord:
+    record = OwnerSetupRecord(
+        wa_id=wa_id,
+        current_step=current_step,
+        collected=collected or {},
+        active=True,
+        started_at=_now(),
+        updated_at=_now(),
+    )
+    _owner_setup_flows[wa_id] = record
+    return record
+
+
+async def update_owner_setup(
+    wa_id: str,
+    *,
+    current_step: str | None = None,
+    collected: dict | None = None,
+    active: bool | None = None,
+) -> OwnerSetupRecord | None:
+    record = _owner_setup_flows.get(wa_id)
+    if not record:
+        return None
+    if current_step is not None:
+        record.current_step = current_step
+    if collected is not None:
+        record.collected = collected
+    if active is not None:
+        record.active = active
+    record.updated_at = _now()
+    return record
+
+
+async def complete_owner_setup(wa_id: str) -> OwnerSetupRecord | None:
+    record = _owner_setup_flows.get(wa_id)
+    if not record:
+        return None
+    record.active = False
+    record.completed_at = _now()
+    record.updated_at = _now()
+    return record
+
+
+# ---------------------------------------------------------------------------
 # Initialization
 # ---------------------------------------------------------------------------
 
@@ -413,5 +491,6 @@ async def reset_state() -> None:
     _messages.clear()
     _relay_sessions.clear()
     _escalations.clear()
+    _owner_setup_flows.clear()
     _processed_msg_ids.clear()
     _locks.clear()

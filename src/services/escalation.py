@@ -4,9 +4,12 @@ Extracted from the prototype's conversation.py (lines 53-97) and extended
 with an LLM classifier for ambiguous cases.
 """
 
+import logging
 import re
 
 import config
+
+log = logging.getLogger("vyapari.services.escalation")
 
 # ---------------------------------------------------------------------------
 # Regex patterns (from prototype, proven in testing)
@@ -26,9 +29,11 @@ BOT_ESCALATION_MARKERS = [
     r"will get back", r"arrange.*callback", r"have them call",
 ]
 
+# Known uppercase acronyms in car sales context (not frustration signals)
+_KNOWN_ACRONYMS = {"SUV", "EMI", "SBI", "RTO", "CNG", "LED", "ABS", "EBD", "ESP", "USB", "GPS", "PDF", "OBV", "IDV", "NCB"}
+
 # Negative sentiment signals that trigger the LLM fallback
 _SENTIMENT_SIGNALS = [
-    r"[A-Z]{3,}",       # ALL CAPS (3+ chars)
     r"[!?]{2,}",         # multiple ! or ?
     r"waste", r"bakwas", r"bekar", r"fraud", r"scam",
     r"not happy", r"disappointed", r"angry", r"frustrated",
@@ -36,7 +41,13 @@ _SENTIMENT_SIGNALS = [
 ]
 
 
-def detect_escalation(customer_msg: str, bot_reply: str) -> tuple[bool, str]:
+def _has_real_caps_anger(text: str) -> bool:
+    """Check for ALL CAPS words that aren't known acronyms (5+ chars)."""
+    words = re.findall(r"\b[A-Z]{5,}\b", text)
+    return any(w not in _KNOWN_ACRONYMS for w in words)
+
+
+async def detect_escalation(customer_msg: str, bot_reply: str) -> tuple[bool, str]:
     """Check if this exchange should trigger escalation.
 
     Returns (should_escalate, reason_string).
@@ -59,26 +70,27 @@ def detect_escalation(customer_msg: str, bot_reply: str) -> tuple[bool, str]:
     # Pass 3: check for negative sentiment signals -> LLM fallback
     has_sentiment = any(
         re.search(p, customer_msg) for p in _SENTIMENT_SIGNALS
-    )
+    ) or _has_real_caps_anger(customer_msg)
+
     if has_sentiment and config.USE_OPENAI:
-        return _classify_escalation_llm(customer_msg, bot_reply)
+        return await _classify_escalation_llm(customer_msg, bot_reply)
 
     return False, ""
 
 
-def _classify_escalation_llm(
+async def _classify_escalation_llm(
     customer_msg: str, bot_reply: str
 ) -> tuple[bool, str]:
     """GPT-4.1 nano fallback for ambiguous escalation signals.
 
     Only called when regex doesn't match but sentiment signals are present.
-    Synchronous (blocking) because it's a quick classification call.
+    Uses AsyncOpenAI to avoid blocking the event loop.
     """
     try:
-        from openai import OpenAI
+        from openai import AsyncOpenAI
 
-        client = OpenAI(api_key=config.OPENAI_API_KEY)
-        response = client.chat.completions.create(
+        client = AsyncOpenAI(api_key=config.OPENAI_API_KEY)
+        response = await client.chat.completions.create(
             model=config.OPENAI_CLASSIFIER_MODEL,
             messages=[
                 {
@@ -104,8 +116,8 @@ def _classify_escalation_llm(
         answer = response.choices[0].message.content.strip().lower()
         if answer.startswith("yes"):
             return True, "LLM classifier detected escalation signal"
-    except Exception:
-        pass  # fail open — don't escalate if classifier errors
+    except Exception as e:
+        log.warning(f"Escalation classifier error: {e}")
 
     return False, ""
 

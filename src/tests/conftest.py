@@ -12,6 +12,7 @@ import pytest_asyncio
 # Add src to path so imports work
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from catalogue import reset_runtime_data
 import state
 from models import (
     ConversationState,
@@ -31,8 +32,10 @@ from models import (
 async def clean_state():
     """Reset all in-memory state before each test."""
     await state.reset_state()
+    reset_runtime_data()
     yield
     await state.reset_state()
+    reset_runtime_data()
 
 
 # ---------------------------------------------------------------------------

@@ -159,3 +159,13 @@ class DailyWrapRecord(BaseModel):
     date: str  # YYYY-MM-DD
     data: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class OwnerSetupRecord(BaseModel):
+    wa_id: str
+    current_step: str = "business_name"
+    collected: dict[str, Any] = Field(default_factory=dict)
+    active: bool = True
+    started_at: datetime = Field(default_factory=datetime.utcnow)
+    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    completed_at: datetime | None = None

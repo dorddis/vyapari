@@ -171,7 +171,7 @@ async def tool_batch_followup(
     For now: returns what WOULD be sent. Actual LLM generation + sending
     will be wired when the agents are running.
     """
-    statuses = [LeadStatus(s.strip()) for s in status_filter.split(",") if s.strip() in LeadStatus.__members__]
+    statuses = [LeadStatus(s.strip().lower()) for s in status_filter.split(",") if s.strip().lower() in [e.value for e in LeadStatus]]
     if not statuses:
         statuses = [LeadStatus.WARM, LeadStatus.HOT]
 

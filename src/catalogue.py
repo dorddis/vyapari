@@ -1,6 +1,9 @@
 """Load and query the demo catalogue + FAQs + business profile."""
 
+from copy import deepcopy
 import json
+
+import config
 from config import DATA_DIR
 
 
@@ -9,10 +12,58 @@ def _load_json(filename: str) -> dict:
         return json.load(f)
 
 
-# Load once at import
-BUSINESS = _load_json("business_profile.json")
-CATALOGUE = _load_json("catalogue.json")
-FAQS = _load_json("faqs.json")
+_ORIGINAL_BUSINESS = _load_json("business_profile.json")
+_ORIGINAL_CATALOGUE = _load_json("catalogue.json")
+_ORIGINAL_FAQS = _load_json("faqs.json")
+
+# Runtime copies that tools and prompts can mutate safely in-memory.
+BUSINESS = deepcopy(_ORIGINAL_BUSINESS)
+CATALOGUE = deepcopy(_ORIGINAL_CATALOGUE)
+FAQS = deepcopy(_ORIGINAL_FAQS)
+
+
+def reset_runtime_data() -> None:
+    """Reset business, catalogue, and FAQ data back to the demo baseline."""
+    BUSINESS.clear()
+    BUSINESS.update(deepcopy(_ORIGINAL_BUSINESS))
+    CATALOGUE.clear()
+    CATALOGUE.update(deepcopy(_ORIGINAL_CATALOGUE))
+    FAQS.clear()
+    FAQS.update(deepcopy(_ORIGINAL_FAQS))
+
+
+def update_business_profile(
+    *,
+    business_name: str | None = None,
+    business_type: str | None = None,
+    city: str | None = None,
+    contact_phone: str | None = None,
+    greeting: str | None = None,
+    faq_enabled: bool | None = None,
+) -> dict:
+    """Update the runtime business profile used by prompts and tools."""
+    if business_name:
+        BUSINESS["business_name"] = business_name.strip()
+    if business_type:
+        BUSINESS["type"] = business_type.strip()
+    if city:
+        BUSINESS.setdefault("location", {})["city"] = city.strip()
+    if contact_phone:
+        BUSINESS.setdefault("contact", {})["phone_primary"] = contact_phone.strip()
+        BUSINESS["contact"]["whatsapp"] = contact_phone.strip()
+    if greeting:
+        BUSINESS["greeting_message"] = greeting.strip()
+        BUSINESS["greeting_message_hindi"] = greeting.strip()
+    if faq_enabled is not None:
+        BUSINESS.setdefault("settings", {})["dealer_faq_presets_enabled"] = faq_enabled
+    return BUSINESS
+
+
+def get_customer_share_link() -> str:
+    """Customer-facing share link for the currently configured demo business."""
+    slug = BUSINESS.get("business_name", config.DEFAULT_BUSINESS_NAME).strip().lower()
+    slug = "-".join(part for part in slug.replace("&", " ").split() if part)
+    return f"{config.PUBLIC_BASE_URL}/?business={slug or 'demo'}"
 
 
 def mark_car_sold(car_id: int) -> dict | None:

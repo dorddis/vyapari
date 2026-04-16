@@ -6,6 +6,8 @@ same tools, same state whether it's web or WhatsApp.
 
 import logging
 
+from uuid import uuid4
+
 from fastapi import APIRouter
 from pydantic import BaseModel
 
@@ -48,7 +50,7 @@ async def customer_chat(req: ChatRequest):
     msg = IncomingMessage(
         wa_id=req.customer_id,
         text=req.message,
-        msg_id=f"web_{req.customer_id}_{id(req)}",
+        msg_id=f"web_{uuid4().hex[:16]}",
         msg_type=MessageType.TEXT,
         sender_name=req.customer_name,
     )
