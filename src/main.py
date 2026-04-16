@@ -198,22 +198,29 @@ async def _process_and_reply(msg: IncomingMessage):
         await channel.send_typing(msg.wa_id)
         await channel.mark_read(msg.msg_id)
 
-        # Voice note: transcribe audio to text before dispatching
-        if msg.msg_type.value in ("voice", "audio") and msg.media_url:
+        # Voice note: download from WhatsApp if needed, then transcribe
+        if msg.msg_type.value in ("voice", "audio") and (msg.media_url or msg.media_id):
             try:
                 from services.voice import transcribe_voice_note
-                import httpx
 
-                log.info(f"Downloading voice note from {msg.media_url[:60]}...")
-                async with httpx.AsyncClient() as http:
-                    headers = {}
-                    if config.WHATSAPP_ACCESS_TOKEN:
-                        headers["Authorization"] = f"Bearer {config.WHATSAPP_ACCESS_TOKEN}"
-                    resp = await http.get(msg.media_url, headers=headers, timeout=30)
-                    resp.raise_for_status()
-                    audio_bytes = resp.content
+                if msg.media_id and not msg.media_url:
+                    # WhatsApp: download via Graph API
+                    from whatsapp import download_media
+                    log.info(f"Downloading voice note {msg.media_id} for {msg.wa_id}...")
+                    audio_bytes, mime_type = await download_media(msg.media_id)
+                else:
+                    # media_url already set (e.g. web upload)
+                    import httpx
+                    log.info(f"Downloading voice note from {msg.media_url[:60]}...")
+                    async with httpx.AsyncClient() as http:
+                        headers = {}
+                        if config.WHATSAPP_ACCESS_TOKEN:
+                            headers["Authorization"] = f"Bearer {config.WHATSAPP_ACCESS_TOKEN}"
+                        resp = await http.get(msg.media_url, headers=headers, timeout=30)
+                        resp.raise_for_status()
+                        audio_bytes = resp.content
+                        mime_type = resp.headers.get("content-type", "audio/ogg")
 
-                mime_type = resp.headers.get("content-type", "audio/ogg")
                 msg.text = await transcribe_voice_note(audio_bytes, mime_type)
                 log.info(f"Voice transcribed for {msg.wa_id}: {msg.text[:80]}...")
             except Exception as e:
@@ -223,6 +230,51 @@ async def _process_and_reply(msg: IncomingMessage):
                     "Sorry, I couldn't understand that voice note. Could you type your message instead?",
                 )
                 return
+
+        # Image / Document: download from WhatsApp, store, set media_url
+        if msg.msg_type.value in ("image", "document") and msg.media_id and not msg.media_url:
+            try:
+                from whatsapp import download_media
+                from services.image_store import upload_image as store_image
+                from services.image_store import _ext_from_mime
+
+                log.info(f"Downloading media {msg.media_id} for {msg.wa_id}...")
+                file_bytes, mime_type = await download_media(msg.media_id)
+
+                if not file_bytes:
+                    raise ValueError(f"Downloaded 0 bytes for media {msg.media_id}")
+
+                # Pick storage folder based on sender role
+                staff = await state.get_staff(msg.wa_id)
+                folder = "inventory" if staff else "customer_uploads"
+
+                from uuid import uuid4
+                ext = _ext_from_mime(mime_type)
+                fname = f"{uuid4().hex[:12]}_{msg.msg_id[-8:]}{ext}"
+
+                media_url = await store_image(
+                    image_bytes=file_bytes,
+                    filename=fname,
+                    folder=folder,
+                    content_type=mime_type,
+                )
+                msg.media_url = media_url
+                log.info(f"Media stored for {msg.wa_id}: {media_url}")
+            except Exception as e:
+                log.error(f"Media download/store failed for {msg.wa_id}: {e}", exc_info=True)
+                await channel.send_text(
+                    msg.wa_id,
+                    "Sorry, I couldn't process that file. Could you try sending it again?",
+                )
+                return
+
+        # Video: not supported yet
+        if msg.msg_type.value == "video":
+            await channel.send_text(
+                msg.wa_id,
+                "Sorry, I can't process videos yet. Please send a photo or PDF instead!",
+            )
+            return
 
         reply = await dispatch(msg)
 

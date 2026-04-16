@@ -109,6 +109,8 @@ def _ext_from_mime(content_type: str) -> str:
         "image/png": ".png",
         "image/webp": ".webp",
         "image/gif": ".gif",
+        "image/heic": ".heic",
+        "image/heif": ".heif",
         "application/pdf": ".pdf",
     }
     return mapping.get(content_type, ".jpg")
