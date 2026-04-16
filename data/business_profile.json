@@ -1,0 +1,150 @@
+{
+  "business_name": "Sharma Motors",
+  "tagline": "Trusted Pre-Owned Cars Since 2020",
+  "established_year": 2020,
+  "type": "Used Car Dealership",
+  "owner": {
+    "name": "Rajesh Sharma",
+    "title": "Proprietor",
+    "background": "Former Maruti Suzuki dealership manager with 12 years of automotive experience. Started Sharma Motors to bring organized, transparent used car buying to Mumbai."
+  },
+  "location": {
+    "address_line_1": "Shop No. 7, Ground Floor",
+    "address_line_2": "Oshiwara Industrial Centre, off New Link Road",
+    "area": "Andheri West",
+    "city": "Mumbai",
+    "state": "Maharashtra",
+    "pincode": "400053",
+    "landmark": "Near Oshiwara Metro Station",
+    "google_maps_url": "https://maps.google.com/?q=Oshiwara+Industrial+Centre+Andheri+West+Mumbai",
+    "nearest_railway": "Jogeshwari (W) - Western Line",
+    "nearest_metro": "Oshiwara Metro Station - Line 2A"
+  },
+  "contact": {
+    "phone_primary": "+91-98765-43210",
+    "phone_secondary": "+91-98765-43211",
+    "whatsapp": "+91-98765-43210",
+    "email": "sales@sharmamotors.in",
+    "website": "https://www.sharmamotors.in"
+  },
+  "social_media": {
+    "instagram": "@sharmamotors.mumbai",
+    "facebook": "SharmaMotorsMumbai",
+    "youtube": "SharmaMotorsAndheri"
+  },
+  "hours": {
+    "monday": "10:00 AM - 7:30 PM",
+    "tuesday": "10:00 AM - 7:30 PM",
+    "wednesday": "10:00 AM - 7:30 PM",
+    "thursday": "10:00 AM - 7:30 PM",
+    "friday": "10:00 AM - 7:30 PM",
+    "saturday": "10:00 AM - 7:30 PM",
+    "sunday": "10:00 AM - 2:00 PM (By Appointment Only)",
+    "holidays": "Closed on public holidays"
+  },
+  "greeting_message": "Hey! Sharma Motors mein aapka swagat hai! Kuch specific dhundh rahe ho ya bas browse kar rahe ho? Abhi 20 gaadiyaan hai, market se sasta because no showroom rent. Bataao kya chahiye!",
+  "greeting_message_hindi": "Hey! Sharma Motors mein aapka swagat hai! Kuch specific dhundh rahe ho ya bas browse kar rahe ho? Abhi 20 gaadiyaan hai, market se sasta kyunki showroom ka kharcha nahi hai. Bataao kya chahiye!",
+  "personality": {
+    "tone": "Friendly, helpful, and trustworthy. Like talking to a knowledgeable family friend who happens to know everything about cars.",
+    "language_preference": "Hinglish (mix of Hindi and English) is preferred, but switch to pure English or Hindi based on customer's language.",
+    "sales_approach": "Consultative, not pushy. Understand the customer's needs first, then recommend. Never oversell. If a car doesn't fit, say so honestly.",
+    "key_values": [
+      "Transparency in pricing and car history",
+      "No hidden charges",
+      "Customer-first approach",
+      "Building long-term relationships over one-time sales"
+    ]
+  },
+  "services": [
+    "Used car sales (budget to premium segment)",
+    "Car exchange / trade-in evaluation",
+    "Financing assistance (HDFC, ICICI, Bajaj, Mahindra Finance)",
+    "Insurance facilitation (new + transfer)",
+    "RC transfer and RTO work",
+    "150-point vehicle inspection",
+    "After-sales workshop support",
+    "Home delivery (Mumbai, Navi Mumbai, Thane, Pune)",
+    "Free car valuation for sellers"
+  ],
+  "usp": [
+    "Every car undergoes 150-point inspection",
+    "6-month engine and gearbox warranty on all cars",
+    "3-day/300 km money-back guarantee",
+    "Free RC transfer included in price",
+    "No hidden charges - what you see is what you pay",
+    "Family-run business with 5+ years reputation"
+  ],
+  "inventory_stats": {
+    "typical_stock": "20-30 cars",
+    "price_range": "Rs 2.5 lakh - Rs 35 lakh",
+    "segments": ["Hatchback", "Sedan", "Compact SUV", "SUV", "MUV"],
+    "popular_brands": ["Maruti Suzuki", "Hyundai", "Tata", "Honda", "Kia", "Toyota", "MG", "Jeep"],
+    "refresh_rate": "New cars added every week"
+  },
+  "finance_partners": [
+    {
+      "name": "HDFC Bank",
+      "min_rate": "9.5%",
+      "max_tenure": "60 months"
+    },
+    {
+      "name": "ICICI Bank",
+      "min_rate": "10.0%",
+      "max_tenure": "60 months"
+    },
+    {
+      "name": "Bajaj Finance",
+      "min_rate": "10.5%",
+      "max_tenure": "48 months"
+    },
+    {
+      "name": "Mahindra Finance",
+      "min_rate": "11.0%",
+      "max_tenure": "48 months",
+      "note": "Best for self-employed and older vehicles"
+    }
+  ],
+  "warranty_tiers": [
+    {
+      "tier": "Standard",
+      "coverage": "Engine and Gearbox",
+      "duration": "6 months / 10,000 km",
+      "applicable": "All cars",
+      "cost": "Included"
+    },
+    {
+      "tier": "Premium",
+      "coverage": "Engine, Gearbox, AC, Electrical",
+      "duration": "1 year / 15,000 km",
+      "applicable": "Cars above Rs 10 lakh",
+      "cost": "Included"
+    },
+    {
+      "tier": "Extended",
+      "coverage": "Comprehensive (engine, gearbox, AC, electrical, suspension)",
+      "duration": "2 years / 30,000 km",
+      "applicable": "All cars",
+      "cost": "Rs 8,000 - Rs 25,000 depending on car value"
+    }
+  ],
+  "customer_testimonials": [
+    {
+      "name": "Priya M.",
+      "car": "Hyundai i20 Asta",
+      "rating": 5,
+      "review": "Bought my first car from Sharma Motors. Rajesh bhai personally explained every feature and helped with the loan. Car was exactly as described. Highly recommended!"
+    },
+    {
+      "name": "Amit K.",
+      "car": "Toyota Fortuner",
+      "rating": 5,
+      "review": "Exchanged my old Innova for a Fortuner. Got the best exchange value compared to 3 other dealers I visited. Transparent process, no hidden surprises."
+    },
+    {
+      "name": "Sneha & Rohan D.",
+      "car": "Tata Nexon XZ+",
+      "rating": 4,
+      "review": "Good experience overall. RC transfer took a bit longer than expected but the team kept us informed throughout. Car quality is excellent."
+    }
+  ]
+}

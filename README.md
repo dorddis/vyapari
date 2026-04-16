@@ -1,0 +1,88 @@
+# Vyapari Agent
+
+AI sales agent for high-ticket businesses. WhatsApp-native. Built for the Codex Hackathon (April 16-17, 2026).
+
+**Demo vertical:** Used car dealership (Sharma Motors, Mumbai)
+
+## What It Does
+
+A dealer posts a viral reel. 200 WhatsApp messages in 3 hours. 2 staff. 150 go unanswered. Each lost lead costs Rs 3-8 lakh.
+
+Vyapari Agent handles the overflow -- answers questions, browses inventory with photos, compares cars, detects buying signals, and relays the owner in when it's time to close. The owner never opens a dashboard. They just talk to the agent.
+
+## Architecture
+
+```
+Customer (WhatsApp) <-> Vyapari Agent (FastAPI + OpenAI) <-> Owner/SDR (WhatsApp)
+                              |
+                         PostgreSQL
+                         (sessions, catalogue, leads)
+```
+
+- **Customer Agent** -- per-customer sessions, catalogue tools, escalation detection
+- **Owner Agent** -- analytics, catalogue management, relay sessions, staff management
+- **Message Router** -- role-based routing (customer/owner/SDR), relay state machine
+- **Relay System** -- owner talks to customers through the agent with `/` commands
+
+See `docs/DESIGN_DOC.md` for the full specification.
+
+## Quick Start
+
+```bash
+cd src
+cp ../.env.example .env          # fill in your keys
+pip install -r requirements.txt
+python main.py                   # http://localhost:8000
+```
+
+For WhatsApp webhook testing:
+```bash
+ngrok http 8000                  # expose local server
+# Set the ngrok URL as webhook in Meta App Dashboard
+```
+
+## Project Structure
+
+```
+vyapari/
+|-- docs/                  # Design doc, demo flow, requirements
+|-- data/                  # Sharma Motors demo data (20 cars, FAQs, business profile)
+|-- research/              # Implementation reference (WhatsApp API, OpenAI Agents SDK)
+|-- src/                   # Application code
+|   |-- main.py            # FastAPI entry point + WhatsApp webhook
+|   |-- config.py          # Environment config
+|   |-- whatsapp.py        # WhatsApp Cloud API client
+|   |-- catalogue.py       # Catalogue queries
+|   |-- conversation.py    # Customer agent (Gemini, to be swapped to OpenAI)
+|   |-- owner_agent.py     # Owner oracle agent
+|   |-- message_store.py   # In-memory conversation state
+|   |-- web_api.py         # REST API for web frontend
+|   |-- static/            # Web demo frontend (2 phone frames)
+|-- .env.example           # Environment template
+```
+
+## Team Work Split
+
+| Area | Files | What To Build |
+|------|-------|---------------|
+| Customer Agent | `conversation.py` | Swap Gemini -> OpenAI Agents SDK, add function tools |
+| Owner Agent | `owner_agent.py` | OpenAI Agents SDK, relay tools, staff mgmt tools |
+| Router + Relay | `message_store.py`, `web_api.py` | State machine, `/login`, `/done`, `/switch` |
+| WhatsApp UX | `whatsapp.py` | Interactive messages (lists, buttons), typing indicator |
+
+## Key Docs
+
+- **`docs/DESIGN_DOC.md`** -- The blueprint. Read this first.
+- **`docs/DEMO_FLOW.md`** -- Demo script ("Rajesh's Tuesday")
+- **`research/AGENT_ARCHITECTURE_SYNTHESIS.md`** -- Why OpenAI Agents SDK, how sessions work
+- **`research/OPENAI_AGENTS_SDK_ARCHITECTURE.md`** -- Code patterns for the SDK
+
+## Tech Stack
+
+| Layer | Choice |
+|-------|--------|
+| Backend | FastAPI (Python) |
+| LLM | GPT-5 (OpenAI Agents SDK) |
+| Database | PostgreSQL |
+| WhatsApp | Cloud API v21.0 via PyWa |
+| Web Demo | Vanilla HTML/CSS/JS |

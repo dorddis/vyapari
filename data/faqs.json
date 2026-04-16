@@ -1,0 +1,127 @@
+{
+  "dealer": "Sharma Motors",
+  "last_updated": "2026-04-02",
+  "total_faqs": 20,
+  "faqs": [
+    {
+      "id": 1,
+      "category": "Financing",
+      "question": "Do you offer financing / loan options?",
+      "answer": "Yes, we have tie-ups with HDFC Bank, ICICI Bank, Bajaj Finance, and Mahindra Finance. We can arrange loans with EMIs starting from as low as Rs 5,999/month depending on the car and tenure. Loan approval usually takes 24-48 hours. We handle all the paperwork for you."
+    },
+    {
+      "id": 2,
+      "category": "Financing",
+      "question": "What documents are needed for a car loan?",
+      "answer": "For salaried individuals: PAN card, Aadhaar card, last 3 months salary slips, last 6 months bank statement, and address proof. For self-employed: PAN card, Aadhaar card, last 2 years ITR, last 6 months bank statement, business proof, and address proof."
+    },
+    {
+      "id": 3,
+      "category": "Financing",
+      "question": "What is the down payment required?",
+      "answer": "Typically 15-20% of the car value. For example, on a Rs 8 lakh car, the down payment would be Rs 1.2-1.6 lakh. Some finance partners offer up to 90% funding for salaried applicants with good CIBIL scores (750+)."
+    },
+    {
+      "id": 4,
+      "category": "Financing",
+      "question": "What EMI tenure options are available?",
+      "answer": "We offer flexible EMI options from 12 months to 60 months (5 years). Interest rates typically range from 9.5% to 14% per annum depending on the lender, your credit score, and the car's age. Older cars (7+ years) may have slightly higher rates."
+    },
+    {
+      "id": 5,
+      "category": "Test Drive",
+      "question": "Can I take a test drive?",
+      "answer": "Absolutely! Test drives are available for all cars in our showroom. Just bring your valid driving licence. We offer test drives at our Andheri West showroom from 10 AM to 7 PM, Monday to Saturday. Sunday test drives available by appointment. We can also arrange a home test drive within Mumbai city limits for a nominal fee of Rs 500 (refundable on purchase)."
+    },
+    {
+      "id": 6,
+      "category": "Exchange",
+      "question": "Do you accept exchange / trade-in of my current car?",
+      "answer": "Yes! We offer the best exchange value for your current car. Bring your car for a free 30-minute evaluation. We accept all makes and models. The exchange value is adjusted against the purchase price, reducing your out-of-pocket cost. We handle all the transfer paperwork for your old car too."
+    },
+    {
+      "id": 7,
+      "category": "Warranty",
+      "question": "Do your cars come with any warranty?",
+      "answer": "All cars at Sharma Motors come with a minimum 6-month/10,000 km engine and gearbox warranty. Premium cars (above Rs 10 lakh) come with 1-year/15,000 km comprehensive warranty covering engine, gearbox, AC, and electrical. Extended warranty plans are available at additional cost."
+    },
+    {
+      "id": 8,
+      "category": "Documents",
+      "question": "What documents are required to buy a car?",
+      "answer": "To purchase a car, you need: (1) Valid photo ID (Aadhaar/Passport/Voter ID), (2) Address proof, (3) PAN card (mandatory for transactions above Rs 50,000), (4) Passport-size photos (4 nos.), (5) If financing: loan documents as mentioned above. For outstation buyers, we may require additional address verification."
+    },
+    {
+      "id": 9,
+      "category": "RC Transfer",
+      "question": "How does the RC transfer process work?",
+      "answer": "We handle the complete RC (Registration Certificate) transfer for you at no extra charge. The process takes 15-30 working days depending on the RTO. For within-Maharashtra transfers, it is straightforward. For interstate transfers (NOC required), it can take 45-60 days. All RTO fees, road tax differential (if any), and agent charges are included in the price we quote."
+    },
+    {
+      "id": 10,
+      "category": "Insurance",
+      "question": "Do you help with insurance transfer?",
+      "answer": "Yes, we assist with insurance transfer or new policy issuance. If the existing policy is valid, we transfer it to your name (takes 3-5 working days). If expired, we can arrange a new comprehensive policy from Royal Sundaram, ICICI Lombard, or HDFC Ergo at competitive rates. We recommend comprehensive insurance for the first 3 years at minimum."
+    },
+    {
+      "id": 11,
+      "category": "Return Policy",
+      "question": "Is there a return policy?",
+      "answer": "We offer a 3-day/300 km money-back guarantee on all purchases. If you are not satisfied with the car for any reason, return it within 3 days or 300 km (whichever comes first) in the same condition, and we will refund your full amount. This is our confidence in the quality of our cars. Terms and conditions apply."
+    },
+    {
+      "id": 12,
+      "category": "Business Info",
+      "question": "What are your business hours and location?",
+      "answer": "Sharma Motors is located at Shop No. 7, Ground Floor, Oshiwara Industrial Centre, off New Link Road, Andheri West, Mumbai 400053. We are open Monday to Saturday from 10:00 AM to 7:30 PM. Sunday: 10:00 AM to 2:00 PM (by appointment only). Closed on public holidays. Nearest station: Oshiwara Metro / Jogeshwari (W) railway station."
+    },
+    {
+      "id": 13,
+      "category": "Delivery",
+      "question": "Do you offer home delivery?",
+      "answer": "Yes! We offer doorstep delivery anywhere in Mumbai and Navi Mumbai at Rs 2,000. For Thane and Pune, delivery charges are Rs 3,500. The car is delivered on a flatbed truck with full insurance coverage during transit. We also do a handover ceremony with a full demo of the car features at your location."
+    },
+    {
+      "id": 14,
+      "category": "Payment",
+      "question": "What payment methods do you accept?",
+      "answer": "We accept: (1) Bank transfer (NEFT/RTGS/IMPS) - preferred for amounts above Rs 2 lakh, (2) Demand Draft, (3) UPI (PhonePe/GPay) - for booking amount up to Rs 50,000, (4) Credit/Debit card - for booking amount only, up to Rs 1 lakh. We do NOT accept cash payments above Rs 2 lakh as per Income Tax Act regulations. All payments must be in the buyer's name."
+    },
+    {
+      "id": 15,
+      "category": "Inspection",
+      "question": "Can I get the car inspected by my own mechanic?",
+      "answer": "100% yes! We encourage independent inspection. You are welcome to bring your own mechanic or arrange a third-party inspection (like Droom or CarDekho inspection). We have a lift and basic tools available at our workshop next door. Every car also comes with our own 150-point inspection report that you can review before purchase."
+    },
+    {
+      "id": 16,
+      "category": "Inspection",
+      "question": "Do you provide a vehicle inspection report?",
+      "answer": "Every car at Sharma Motors undergoes a thorough 150-point inspection covering engine, transmission, suspension, brakes, electrical, AC, body/paint, interior, and tyres. The report is shared with you as a PDF. For premium cars, we also provide an OBD diagnostic scan report showing any error codes or pending issues."
+    },
+    {
+      "id": 17,
+      "category": "Pricing",
+      "question": "Are your prices negotiable?",
+      "answer": "Our prices are competitively benchmarked against Cars24, Spinny, and OLX. We keep a small margin so there is limited room for negotiation. However, we do offer better value through our exchange program, bundled insurance deals, and free RC transfer. For cash buyers (full payment upfront), we may offer a small additional discount. Best to visit the showroom and discuss."
+    },
+    {
+      "id": 18,
+      "category": "Vehicle History",
+      "question": "Can I check the accident history or service records?",
+      "answer": "We provide full transparency. Each car listing includes: number of previous owners, insurance claim history (from Vahan portal), service records (where available), and any known accident/repair history. We never sell flood-damaged or heavily accident-repaired cars. You can also independently verify the car's history using the registration number on the Vahan/Parivahan portal."
+    },
+    {
+      "id": 19,
+      "category": "Booking",
+      "question": "How do I reserve/book a car?",
+      "answer": "You can reserve any car with a booking amount of Rs 25,000 (fully refundable within 48 hours if you change your mind). Booking can be done online via UPI/bank transfer or in person at the showroom. The booking holds the car for 7 days while you arrange financing or complete inspection. After 7 days, the booking lapses unless extended."
+    },
+    {
+      "id": 20,
+      "category": "After Sales",
+      "question": "Do you provide after-sales support?",
+      "answer": "Yes! We have a dedicated after-sales team. Our tie-up workshop (next door to the showroom) handles servicing, repairs, and maintenance at competitive rates. For warranty claims, just call us and we arrange everything. We also send service reminders and help with insurance renewal when the time comes. Many of our customers have been with us for 5+ years."
+    }
+  ]
+}
