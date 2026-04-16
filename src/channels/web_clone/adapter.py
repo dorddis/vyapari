@@ -16,6 +16,7 @@ from uuid import uuid4
 
 from channels.base import ChannelAdapter
 from models import IncomingMessage, MessageType
+from services.message_log import log_message
 
 log = logging.getLogger("vyapari.channels.web_clone")
 
@@ -80,20 +81,66 @@ class WebCloneAdapter(ChannelAdapter):
     """Channel adapter for the web demo frontend."""
 
     async def send_text(self, to: str, text: str) -> str:
-        return _enqueue(to, "text", {"body": text})
+        role = "bot"
+        try:
+            import state
+            from models import StaffRole
+
+            relay = await state.get_active_relay_for_customer(to)
+            if relay:
+                staff = await state.get_staff(relay.staff_wa_id)
+                if staff and staff.role == StaffRole.OWNER:
+                    role = "owner"
+                elif staff and staff.role == StaffRole.SDR:
+                    role = "sdr"
+        except Exception:
+            role = "bot"
+
+        msg_id = _enqueue(to, "text", {"body": text})
+        await log_message(
+            wa_id=to,
+            role=role,
+            direction="outbound",
+            channel="web_clone",
+            text=text,
+            msg_type="text",
+            external_msg_id=msg_id,
+        )
+        return msg_id
 
     async def send_image(self, to: str, image_url: str, caption: str = "") -> str:
-        return _enqueue(to, "image", {"url": image_url, "caption": caption})
+        msg_id = _enqueue(to, "image", {"url": image_url, "caption": caption})
+        await log_message(
+            wa_id=to,
+            role="bot",
+            direction="outbound",
+            channel="web_clone",
+            text=caption or "Image",
+            msg_type="image",
+            images=[image_url],
+            external_msg_id=msg_id,
+        )
+        return msg_id
 
     async def send_audio(
         self, to: str, audio_bytes: bytes, mime_type: str = "audio/ogg; codecs=opus"
     ) -> str:
         import base64
         b64 = base64.b64encode(audio_bytes).decode("utf-8")
-        return _enqueue(to, "audio", {
+        msg_id = _enqueue(to, "audio", {
             "data": b64,
             "mime_type": mime_type,
         })
+        await log_message(
+            wa_id=to,
+            role="bot",
+            direction="outbound",
+            channel="web_clone",
+            text="Audio",
+            msg_type="audio",
+            external_msg_id=msg_id,
+        )
+        return msg_id
 
     async def send_buttons(
         self,
@@ -104,13 +151,26 @@ class WebCloneAdapter(ChannelAdapter):
         footer: str | None = None,
         image_url: str | None = None,
     ) -> str:
-        return _enqueue(to, "buttons", {
+        msg_id = _enqueue(to, "buttons", {
             "body": body,
             "buttons": buttons,
             "header": header,
             "footer": footer,
             "image_url": image_url,
         })
+        titles = ", ".join(button.get("title", "Option") for button in buttons)
+        text = body if titles == "" else f"{body}\n\nOptions: {titles}"
+        await log_message(
+            wa_id=to,
+            role="bot",
+            direction="outbound",
+            channel="web_clone",
+            text=text,
+            msg_type="interactive_buttons",
+            images=[image_url] if image_url else [],
+            external_msg_id=msg_id,
+        )
+        return msg_id
 
     async def send_list(
         self,
@@ -121,13 +181,28 @@ class WebCloneAdapter(ChannelAdapter):
         header: str | None = None,
         footer: str | None = None,
     ) -> str:
-        return _enqueue(to, "list", {
+        msg_id = _enqueue(to, "list", {
             "body": body,
             "button_text": button_text,
             "sections": sections,
             "header": header,
             "footer": footer,
         })
+        rows: list[str] = []
+        for section in sections:
+            for row in section.get("rows", []):
+                rows.append(row.get("title", "Item"))
+        text = body if not rows else f"{body}\n\n{button_text}: {', '.join(rows[:10])}"
+        await log_message(
+            wa_id=to,
+            role="bot",
+            direction="outbound",
+            channel="web_clone",
+            text=text,
+            msg_type="interactive_list",
+            external_msg_id=msg_id,
+        )
+        return msg_id
 
     async def send_location(
         self,
@@ -137,15 +212,39 @@ class WebCloneAdapter(ChannelAdapter):
         name: str = "",
         address: str = "",
     ) -> str:
-        return _enqueue(to, "location", {
+        msg_id = _enqueue(to, "location", {
             "latitude": latitude,
             "longitude": longitude,
             "name": name,
             "address": address,
         })
+        label = name or "Location"
+        text = f"{label}: {latitude}, {longitude}"
+        if address:
+            text = f"{text}\n{address}"
+        await log_message(
+            wa_id=to,
+            role="bot",
+            direction="outbound",
+            channel="web_clone",
+            text=text,
+            msg_type="location",
+            external_msg_id=msg_id,
+        )
+        return msg_id
 
     async def send_contact(self, to: str, name: str, phone: str) -> str:
-        return _enqueue(to, "contact", {"name": name, "phone": phone})
+        msg_id = _enqueue(to, "contact", {"name": name, "phone": phone})
+        await log_message(
+            wa_id=to,
+            role="bot",
+            direction="outbound",
+            channel="web_clone",
+            text=f"Contact: {name} ({phone})",
+            msg_type="contact",
+            external_msg_id=msg_id,
+        )
+        return msg_id
 
     async def send_template(
         self,
@@ -155,11 +254,21 @@ class WebCloneAdapter(ChannelAdapter):
         params: list[str] | None = None,
         image_url: str | None = None,
     ) -> str:
-        # Web clone doesn't have templates — just send as text
         param_str = ", ".join(params) if params else ""
-        return _enqueue(to, "text", {
+        msg_id = _enqueue(to, "text", {
             "body": f"[Template: {template_name}] {param_str}",
         })
+        await log_message(
+            wa_id=to,
+            role="bot",
+            direction="outbound",
+            channel="web_clone",
+            text=f"Template[{template_name}/{language}] {param_str}".strip(),
+            msg_type="template",
+            images=[image_url] if image_url else [],
+            external_msg_id=msg_id,
+        )
+        return msg_id
 
     async def send_typing(self, to: str) -> None:
         # Enqueue a typing indicator the frontend can render

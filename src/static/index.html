@@ -41,7 +41,7 @@
 
         <!-- Chat screen (hidden until prechat button clicked) -->
         <div id="chat-screen" class="hidden" style="display:none;flex-direction:column;height:100%;">
-            <div class="wa-header">
+            <div class="wa-header wa-header-clickable" id="customer-header" role="button" tabindex="0" aria-label="Open business profile">
                 <div class="avatar">SM</div>
                 <div class="info">
                     <div class="name">Sharma Motors</div>
@@ -52,6 +52,37 @@
             <div class="input-area">
                 <input type="text" id="customer-input" placeholder="Type a message..." autocomplete="off">
                 <button id="customer-send">&#10148;</button>
+            </div>
+        </div>
+
+        <div id="customer-profile" class="profile-panel hidden" aria-hidden="true">
+            <div class="profile-panel-header">
+                <button class="profile-back-btn" id="customer-profile-back" type="button" aria-label="Close profile">&#8592;</button>
+                <div>
+                    <div class="profile-title">Contact info</div>
+                    <div class="profile-subtitle">Sharma Motors</div>
+                </div>
+            </div>
+            <div class="profile-hero">
+                <div class="profile-avatar">SM</div>
+                <div class="profile-name">Sharma Motors Andheri</div>
+                <div class="profile-meta">Used car dealership</div>
+            </div>
+            <div class="profile-section">
+                <div class="profile-section-title">About</div>
+                <div class="profile-text">150-point inspected cars, transparent pricing, 6-month warranty on selected stock.</div>
+            </div>
+            <div class="profile-section">
+                <div class="profile-section-title">Quick actions</div>
+                <div class="profile-actions">
+                    <button class="profile-action-btn" id="profile-view-catalogue" type="button">View Catalogue</button>
+                    <button class="profile-action-btn" id="profile-budget-catalogue" type="button">Under Rs 8L</button>
+                </div>
+            </div>
+            <div class="profile-section">
+                <div class="profile-section-title">Business hours</div>
+                <div class="profile-text">Mon-Sat: 9:00 AM - 8:00 PM</div>
+                <div class="profile-text">Sunday: 10:00 AM - 5:00 PM</div>
             </div>
         </div>
 
@@ -71,7 +102,7 @@
         </div>
         <div class="tab-bar">
             <button class="active" data-tab="convos">Chats</button>
-            <button data-tab="oracle">Ask Oracle</button>
+            <button data-tab="oracle">Ask Vyapari Bot</button>
         </div>
 
         <!-- Conversations List Panel -->

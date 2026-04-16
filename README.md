@@ -29,17 +29,16 @@ See `docs/DESIGN_DOC.md` for the full specification.
 ## Quick Start
 
 ```bash
-cd src
-cp ../.env.example .env          # fill in your keys
+cd whatsapp-demo
+cp ../.env.example .env
 pip install -r requirements.txt
-python main.py                   # http://localhost:8000
+python3 main.py                  # http://localhost:3000
 ```
 
-For WhatsApp webhook testing:
-```bash
-ngrok http 8000                  # expose local server
-# Set the ngrok URL as webhook in Meta App Dashboard
-```
+Current local demo scope is intentionally minimal:
+- Single WhatsApp-style customer chat interface
+- Quick message chips for common buyer intents
+- Lightweight `/api/chat` placeholder endpoint to plug in the real agent later
 
 ## Project Structure
 
@@ -48,16 +47,17 @@ vyapari/
 |-- docs/                  # Design doc, demo flow, requirements
 |-- data/                  # Sharma Motors demo data (20 cars, FAQs, business profile)
 |-- research/              # Implementation reference (WhatsApp API, OpenAI Agents SDK)
+|-- whatsapp-demo/         # Isolated runnable WhatsApp demo (chat-only)
+|   |-- main.py            # FastAPI entry point for local web demo
+|   |-- config.py          # Demo config
+|   |-- message_store.py   # In-memory chat state
+|   |-- web_api.py         # Demo REST API
+|   |-- static/            # Demo frontend assets
 |-- src/                   # Application code
-|   |-- main.py            # FastAPI entry point + WhatsApp webhook
 |   |-- config.py          # Environment config
-|   |-- whatsapp.py        # WhatsApp Cloud API client
 |   |-- catalogue.py       # Catalogue queries
 |   |-- conversation.py    # Customer agent (Gemini, to be swapped to OpenAI)
 |   |-- owner_agent.py     # Owner oracle agent
-|   |-- message_store.py   # In-memory conversation state
-|   |-- web_api.py         # REST API for web frontend
-|   |-- static/            # Web demo frontend (2 phone frames)
 |-- .env.example           # Environment template
 ```
 
@@ -67,8 +67,8 @@ vyapari/
 |------|-------|---------------|
 | Customer Agent | `conversation.py` | Swap Gemini -> OpenAI Agents SDK, add function tools |
 | Owner Agent | `owner_agent.py` | OpenAI Agents SDK, relay tools, staff mgmt tools |
-| Router + Relay | `message_store.py`, `web_api.py` | State machine, `/login`, `/done`, `/switch` |
-| WhatsApp UX | `whatsapp.py` | Interactive messages (lists, buttons), typing indicator |
+| Router + Relay | `whatsapp-demo/message_store.py`, `whatsapp-demo/web_api.py` | Chat state and demo API flow |
+| WhatsApp UX | `whatsapp-demo/static/*` | UI interactions and chat experience |
 
 ## Key Docs
 

@@ -1,24 +1,28 @@
-"""REST API endpoints for the web frontend.
+"""REST API endpoints for the web frontend."""
 
-All chat messages go through router.dispatch() — same agents,
-same tools, same state whether it's web or WhatsApp.
-"""
+from __future__ import annotations
 
 import base64
+import hmac
 import logging
-import os
-import tempfile
-
 from uuid import uuid4
 
-from fastapi import APIRouter, File, Form, UploadFile
-from pydantic import BaseModel
+from fastapi import APIRouter, File, Form, HTTPException, Query, Request, UploadFile
+from pydantic import BaseModel, Field
 
+from catalogue import search_cars
 import config
 import state
-from channels.web_clone.adapter import get_pending_messages, reset_outbox
+from channels.base import get_channel
+from channels.web_clone.adapter import WebCloneAdapter, get_pending_messages, reset_outbox
 from models import ConversationState, IncomingMessage, MessageType
 from router import dispatch
+from services.message_log import (
+    delete_messages_for_wa_id,
+    fetch_messages_for_wa_id,
+    list_conversations_from_logs,
+    log_incoming_message,
+)
 from services.relay import open_relay
 
 log = logging.getLogger("vyapari.web_api")
@@ -31,14 +35,27 @@ router = APIRouter(prefix="/api")
 # ---------------------------------------------------------------------------
 
 class ChatRequest(BaseModel):
-    customer_id: str
-    message: str
-    customer_name: str | None = None
+    customer_id: str = Field(min_length=1, max_length=32)
+    message: str = Field(min_length=1, max_length=2000)
+    customer_name: str | None = Field(default=None, max_length=120)
 
 
 class OwnerChatRequest(BaseModel):
-    staff_id: str
-    message: str
+    staff_id: str = Field(min_length=1, max_length=32)
+    message: str = Field(min_length=1, max_length=2000)
+
+
+class OwnerSendRequest(BaseModel):
+    customer_id: str = Field(min_length=1, max_length=32)
+    message: str = Field(min_length=1, max_length=2000)
+
+
+class OwnerReleaseRequest(BaseModel):
+    customer_id: str = Field(min_length=1, max_length=32)
+
+
+class OracleRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=2000)
 
 
 class OwnerSendRequest(BaseModel):
@@ -55,7 +72,70 @@ class OracleRequest(BaseModel):
 
 
 class ResetRequest(BaseModel):
-    customer_id: str
+    customer_id: str = Field(min_length=1, max_length=32)
+
+
+def _require_web_clone() -> WebCloneAdapter:
+    channel = get_channel()
+    if not isinstance(channel, WebCloneAdapter):
+        raise HTTPException(
+            status_code=400,
+            detail="Web API requires CHANNEL_MODE=web_clone.",
+        )
+    return channel
+
+
+def _new_msg_id(prefix: str) -> str:
+    return f"{prefix}-{uuid4()}"
+
+
+def _require_api_auth(request: Request) -> None:
+    requires_auth = config.APP_ENV.lower() == "production" or bool(config.API_AUTH_TOKEN)
+    if not requires_auth:
+        return
+    if not config.API_AUTH_TOKEN:
+        raise HTTPException(status_code=503, detail="API auth token is not configured")
+
+    auth_header = request.headers.get("Authorization", "")
+    bearer = auth_header.removeprefix("Bearer ").strip() if auth_header else ""
+    provided = request.headers.get("X-API-Key") or bearer
+    if not provided or not hmac.compare_digest(provided, config.API_AUTH_TOKEN):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
+def _to_ui_mode(state_value: ConversationState) -> str:
+    if state_value == ConversationState.ESCALATED:
+        return "escalated"
+    if state_value == ConversationState.RELAY_ACTIVE:
+        return "owner"
+    return "bot"
+
+
+def _to_catalogue_card(car: dict[str, object]) -> dict[str, object]:
+    images = car.get("images")
+    image_url = car.get("image_url")
+    if not image_url and isinstance(images, list) and images:
+        image_url = images[0]
+
+    return {
+        "id": car.get("id"),
+        "title": (
+            f"{car.get('year')} {car.get('make')} {car.get('model')} {car.get('variant')}"
+        ).replace("  ", " ").strip(),
+        "make": car.get("make"),
+        "model": car.get("model"),
+        "variant": car.get("variant"),
+        "year": car.get("year"),
+        "fuel_type": car.get("fuel_type"),
+        "transmission": car.get("transmission"),
+        "km_driven": car.get("km_driven"),
+        "num_owners": car.get("num_owners"),
+        "price_lakhs": car.get("price_lakhs"),
+        "condition": car.get("condition"),
+        "color": car.get("color"),
+        "highlights": car.get("highlights") or [],
+        "image_url": image_url,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -63,42 +143,50 @@ class ResetRequest(BaseModel):
 # ---------------------------------------------------------------------------
 
 @router.post("/chat")
-async def customer_chat(req: ChatRequest):
-    """Customer sends a message. Returns agent reply + any queued messages."""
+async def customer_chat(req: ChatRequest, request: Request):
+    """Customer sends a message through the web clone."""
+    _require_api_auth(request)
+    channel = _require_web_clone()
     msg = IncomingMessage(
         wa_id=req.customer_id,
         text=req.message,
-        msg_id=f"web_{uuid4().hex[:16]}",
+        msg_id=_new_msg_id("web-in"),
         msg_type=MessageType.TEXT,
         sender_name=req.customer_name,
     )
 
+    await log_incoming_message(msg, "web_clone")
     reply = await dispatch(msg)
+    if reply:
+        await channel.send_text(req.customer_id, reply)
 
-    # Collect any messages the agent queued (images, buttons, lists, etc.)
     pending = get_pending_messages(req.customer_id)
+    mode = await state.get_conversation_state(req.customer_id)
 
     return {
         "reply": reply,
         "messages": pending,
         "customer_id": req.customer_id,
+        "mode": _to_ui_mode(mode),
+        "is_escalation": mode == ConversationState.ESCALATED,
     }
 
 
 @router.get("/messages/{wa_id}")
-async def get_messages(wa_id: str, since_id: str | None = None):
-    """Poll for new messages (frontend calls this periodically).
-
-    Returns pending outbox messages + conversation state.
-    """
-    pending = get_pending_messages(wa_id, since_id=since_id)
-    conv = await state.get_conversation(wa_id)
-    conv_state = conv.state.value if conv else "active"
-
+async def get_messages(
+    wa_id: str,
+    request: Request,
+    since_id: str | None = None,
+):
+    """Return persisted message history for a single customer."""
+    _require_api_auth(request)
+    _require_web_clone()
+    mode = await state.get_conversation_state(wa_id)
+    messages = await fetch_messages_for_wa_id(wa_id, since_id=since_id)
     return {
-        "wa_id": wa_id,
-        "state": conv_state,
-        "messages": pending,
+        "customer_id": wa_id,
+        "mode": _to_ui_mode(mode),
+        "messages": messages,
     }
 
 
@@ -107,15 +195,19 @@ async def get_messages(wa_id: str, since_id: str | None = None):
 # ---------------------------------------------------------------------------
 
 @router.post("/owner/chat")
-async def owner_chat(req: OwnerChatRequest):
-    """Owner/SDR sends a message to the agent (or relay)."""
+async def owner_chat(req: OwnerChatRequest, request: Request):
+    """Owner or SDR sends a message to the agent or relay path."""
+    _require_api_auth(request)
+    _require_web_clone()
     msg = IncomingMessage(
         wa_id=req.staff_id,
         text=req.message,
-        msg_id=f"web_{req.staff_id}_{id(req)}",
+        msg_id=_new_msg_id("web-owner-chat"),
         msg_type=MessageType.TEXT,
+        sender_name=None,
     )
 
+    await log_incoming_message(msg, "web_clone")
     reply = await dispatch(msg)
     pending = get_pending_messages(req.staff_id)
 
@@ -205,65 +297,35 @@ async def oracle_query(req: OracleRequest):
 
 
 @router.get("/conversations")
-async def list_conversations():
-    """List all customer conversations for the owner panel."""
-    customers = await state.list_customers(limit=50)
-    convos = []
-    for c in customers:
-        conv = await state.get_conversation(c.wa_id)
-        msgs = await state.get_messages(conv.id) if conv else []
-        last_msg = msgs[-1] if msgs else None
-
-        conv_state = ConversationState(conv.state.value) if conv else ConversationState.ACTIVE
-        mode = "escalated" if conv_state == ConversationState.ESCALATED else (
-            "owner" if conv_state == ConversationState.RELAY_ACTIVE else "bot"
-        )
-
-        convos.append({
-            "customer_id": c.wa_id,
-            "customer_name": c.name,
-            "lead_status": c.lead_status.value,
-            "conversation_state": conv_state.value,
-            "last_message": last_msg.content[:80] if last_msg else "",
-            "last_message_role": last_msg.role.value if last_msg else "",
-            "message_count": len(msgs),
-            "last_active": c.last_message_at.isoformat() if c.last_message_at else "",
-            "last_activity": c.last_message_at.isoformat() if c.last_message_at else "",
-            "mode": mode,
-            "has_escalation": conv_state == ConversationState.ESCALATED,
-        })
-
-    convos.sort(key=lambda x: x["last_active"], reverse=True)
-    return {"conversations": convos}
+async def list_conversations(request: Request):
+    """List conversations for the owner panel."""
+    _require_api_auth(request)
+    _require_web_clone()
+    conversations = await list_conversations_from_logs()
+    for conversation in conversations:
+        conv_state = await state.get_conversation_state(conversation["customer_id"])
+        conversation["mode"] = _to_ui_mode(conv_state)
+        conversation["has_escalation"] = conv_state == ConversationState.ESCALATED
+    return {"conversations": conversations}
 
 
 @router.get("/conversation/{wa_id}")
-async def get_conversation_detail(wa_id: str):
-    """Get full conversation history for a specific customer."""
+async def get_conversation_detail(wa_id: str, request: Request):
+    """Get a customer's full message history."""
+    _require_api_auth(request)
+    _require_web_clone()
     customer = await state.get_customer(wa_id)
-    conv = await state.get_conversation(wa_id)
-
-    if not customer or not conv:
+    if not customer:
         return {"error": "Customer not found", "messages": []}
-
-    msgs = await state.get_messages(conv.id)
+    mode = await state.get_conversation_state(wa_id)
+    messages = await fetch_messages_for_wa_id(wa_id)
 
     return {
         "customer_id": wa_id,
         "customer_name": customer.name,
         "lead_status": customer.lead_status.value,
-        "conversation_state": conv.state.value,
-        "messages": [
-            {
-                "id": m.id,
-                "role": m.role.value,
-                "content": m.content,
-                "timestamp": m.timestamp.isoformat(),
-                "images": m.images,
-                "is_escalation": m.is_escalation,
-            }
-            for m in msgs
-        ],
+        "conversation_state": _to_ui_mode(mode),
+        "messages": messages,
     }
 
 
@@ -272,8 +334,9 @@ async def get_conversation_detail(wa_id: str):
 # ---------------------------------------------------------------------------
 
 @router.get("/staff")
-async def list_staff():
+async def list_staff(request: Request):
     """List all staff members."""
+    _require_api_auth(request)
     staff_list = await state.list_staff()
     return {
         "staff": [
@@ -292,21 +355,111 @@ async def list_staff():
 # Utility
 # ---------------------------------------------------------------------------
 
+@router.post("/owner/send")
+async def owner_send(req: OwnerSendRequest, request: Request):
+    """Send a message from the default owner into a customer relay."""
+    _require_api_auth(request)
+    _require_web_clone()
+    owner_wa_id = config.DEFAULT_OWNER_PHONE
+
+    await state.get_or_create_customer(req.customer_id)
+    await state.get_or_create_conversation(req.customer_id)
+    relay = await state.get_active_relay_for_staff(owner_wa_id)
+    if relay is None or relay.customer_wa_id != req.customer_id:
+        session, error = await open_relay(owner_wa_id, req.customer_id)
+        if not session:
+            raise HTTPException(status_code=400, detail=error)
+
+    incoming = IncomingMessage(
+        wa_id=owner_wa_id,
+        text=req.message,
+        msg_id=_new_msg_id("web-owner"),
+        msg_type=MessageType.TEXT,
+        sender_name=config.DEFAULT_OWNER_NAME,
+    )
+    await log_incoming_message(incoming, "web_clone")
+    reply = await dispatch(incoming)
+
+    mode = await state.get_conversation_state(req.customer_id)
+    return {"status": "ok", "mode": _to_ui_mode(mode), "reply": reply}
+
+
+@router.post("/owner/release")
+async def owner_release(req: OwnerReleaseRequest, request: Request):
+    """Release a relay session for the default owner."""
+    _require_api_auth(request)
+    _require_web_clone()
+    owner_wa_id = config.DEFAULT_OWNER_PHONE
+    incoming = IncomingMessage(
+        wa_id=owner_wa_id,
+        text=f"{config.COMMAND_PREFIX}done",
+        msg_id=_new_msg_id("web-owner-cmd"),
+        msg_type=MessageType.TEXT,
+        sender_name=config.DEFAULT_OWNER_NAME,
+    )
+    await log_incoming_message(incoming, "web_clone")
+    await dispatch(incoming)
+    mode = await state.get_conversation_state(req.customer_id)
+    return {"status": "ok", "mode": _to_ui_mode(mode)}
+
+
+@router.post("/owner/query")
+async def oracle_query(req: OracleRequest, request: Request):
+    """Send an owner oracle query via the standard owner dispatch path."""
+    _require_api_auth(request)
+    _require_web_clone()
+    owner_wa_id = config.DEFAULT_OWNER_PHONE
+    incoming = IncomingMessage(
+        wa_id=owner_wa_id,
+        text=req.query,
+        msg_id=_new_msg_id("web-owner-oracle"),
+        msg_type=MessageType.TEXT,
+        sender_name=config.DEFAULT_OWNER_NAME,
+    )
+    await log_incoming_message(incoming, "web_clone")
+    reply = await dispatch(incoming)
+    return {"text": reply or "No response.", "action": None}
+
+
 @router.post("/reset")
-async def reset_conversation(req: ResetRequest):
+async def reset_conversation(req: ResetRequest, request: Request):
     """Reset a customer's conversation (for demo purposes)."""
+    _require_api_auth(request)
+    _require_web_clone()
+    await delete_messages_for_wa_id(req.customer_id)
     await state.reset_customer_state(req.customer_id)
     reset_outbox()
     return {"status": "ok", "customer_id": req.customer_id}
 
 
 @router.get("/catalogue")
-async def get_catalogue():
-    """Get available cars (for frontend browsing)."""
-    from catalogue import CATALOGUE
-
-    available = [c for c in CATALOGUE["cars"] if not c.get("sold")]
-    return {"cars": available, "total": len(available)}
+async def get_catalogue(
+    request: Request,
+    limit: int = Query(default=8, ge=1, le=20),
+    max_price: float | None = Query(default=None, ge=0),
+    min_price: float | None = Query(default=None, ge=0),
+    fuel_type: str | None = Query(default=None, max_length=32),
+    make: str | None = Query(default=None, max_length=64),
+    transmission: str | None = Query(default=None, max_length=32),
+):
+    """Get filtered catalogue cards for frontend browsing."""
+    _require_api_auth(request)
+    _require_web_clone()
+    results = search_cars(
+        max_price=max_price,
+        min_price=min_price,
+        fuel_type=fuel_type,
+        make=make,
+        transmission=transmission,
+    )
+    available = [car for car in results if not car.get("sold")]
+    available.sort(key=lambda car: float(car.get("price_lakhs", 0)))
+    cards = [_to_catalogue_card(car) for car in available[:limit]]
+    return {
+        "cars": cards,
+        "count": len(cards),
+        "total_matches": len(available),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -315,6 +468,7 @@ async def get_catalogue():
 
 @router.post("/voice")
 async def voice_chat(
+    request: Request,
     wa_id: str = Form(...),
     customer_name: str = Form(""),
     file: UploadFile = File(...),
@@ -323,6 +477,8 @@ async def voice_chat(
 
     Returns both the text reply and an audio reply (base64-encoded Opus).
     """
+    _require_api_auth(request)
+    channel = _require_web_clone()
     from services.voice import generate_voice_reply, transcribe_voice_note
 
     contents = await file.read()
@@ -340,7 +496,10 @@ async def voice_chat(
         sender_name=customer_name or None,
     )
 
+    await log_incoming_message(msg, "web_clone")
     reply = await dispatch(msg)
+    if reply:
+        await channel.send_text(wa_id, reply)
     pending = get_pending_messages(wa_id)
 
     # Generate voice reply
@@ -368,6 +527,7 @@ async def voice_chat(
 
 @router.post("/upload-image")
 async def upload_image_endpoint(
+    request: Request,
     wa_id: str = Form(...),
     message: str = Form(""),
     file: UploadFile = File(...),
@@ -378,6 +538,8 @@ async def upload_image_endpoint(
     agent for vision analysis. The URL is also saved in message history
     so conversation replay can show the image.
     """
+    _require_api_auth(request)
+    channel = _require_web_clone()
     from services.image_store import upload_image as store_image
 
     contents = await file.read()
@@ -386,7 +548,11 @@ async def upload_image_endpoint(
     # Determine folder based on context
     staff = await state.get_staff(wa_id)
     if staff:
-        folder = "token_proofs" if "token" in (message or "").lower() or "payment" in (message or "").lower() else "inventory"
+        folder = (
+            "token_proofs"
+            if "token" in (message or "").lower() or "payment" in (message or "").lower()
+            else "inventory"
+        )
     else:
         folder = "customer_uploads"
 
@@ -408,7 +574,10 @@ async def upload_image_endpoint(
         sender_name=None,
     )
 
+    await log_incoming_message(msg, "web_clone")
     reply = await dispatch(msg)
+    if reply:
+        await channel.send_text(wa_id, reply)
     pending = get_pending_messages(wa_id)
 
     return {

@@ -696,7 +696,7 @@ Cost: Marketing ~Rs 0.86/msg, Utility ~Rs 0.11-0.15/msg (free within 24hr window
 - Same backend. Same agents. Same tools.
 - Frontend: two WhatsApp-like phone frames (customer + owner)
 - REST API instead of webhooks: `POST /api/chat`, `GET /api/messages/{id}`, `POST /api/owner/send`
-- Already built and tested in `prototypes/whatsapp-demo-v0/`
+- Already built and tested in `whatsapp-demo/`
 
 ---
 

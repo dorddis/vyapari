@@ -74,9 +74,7 @@ async def lifespan(app: FastAPI):
     await state.init_state()
     log.info(f"Owner seeded: {config.DEFAULT_OWNER_NAME} ({config.DEFAULT_OWNER_PHONE})")
     log.info(f"Channel mode: {config.CHANNEL_MODE}")
-    log.info(
-        f"LLM: {'OpenAI ' + config.OPENAI_MAIN_MODEL if config.USE_OPENAI else 'Gemini ' + config.GEMINI_MODEL}"
-    )
+    log.info(f"LLM: OpenAI {config.OPENAI_MAIN_MODEL}")
 
     expiry_task = asyncio.create_task(relay_expiry_loop())
     yield

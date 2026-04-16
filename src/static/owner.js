@@ -21,6 +21,7 @@
   var activeCustomerId = null;
   var activeTab = "convos";
   var ownerLastMsgId = null;
+  var ownerSending = false;
 
   // --- Helpers ---
 
@@ -51,6 +52,14 @@
     var div = document.createElement("div");
     div.textContent = text;
     return div.innerHTML;
+  }
+
+  function getApiHeaders(includeJson) {
+    var headers = {};
+    if (includeJson) headers["Content-Type"] = "application/json";
+    var apiKey = localStorage.getItem("vyapari_api_key");
+    if (apiKey) headers["X-API-Key"] = apiKey;
+    return headers;
   }
 
   function scrollDown(el) {
@@ -88,7 +97,7 @@
     }
 
     var textDiv = document.createElement("div");
-    textDiv.innerHTML = waMarkdown(text);
+    textDiv.innerHTML = waMarkdown(escapeHtml(text || ""));
     bubble.appendChild(textDiv);
 
     var meta = document.createElement("div");
@@ -106,7 +115,7 @@
     bubble.className = "bubble " + (role === "customer" ? "customer" : "bot");
 
     var textDiv = document.createElement("div");
-    textDiv.innerHTML = waMarkdown(text);
+    textDiv.innerHTML = waMarkdown(escapeHtml(text || ""));
     bubble.appendChild(textDiv);
 
     var meta = document.createElement("div");
@@ -136,7 +145,7 @@
 
   async function loadConversations() {
     try {
-      var resp = await fetch("/api/conversations");
+      var resp = await fetch("/api/conversations", { headers: getApiHeaders(false) });
       var data = await resp.json();
       renderConvoList(data.conversations);
     } catch (err) { /* silent */ }
@@ -186,7 +195,7 @@
 
     ownerMessagesEl.innerHTML = "";
     try {
-      var resp = await fetch("/api/messages/" + customerId);
+      var resp = await fetch("/api/messages/" + customerId, { headers: getApiHeaders(false) });
       var data = await resp.json();
       data.messages.forEach(function (msg) {
         if (msg.is_escalation) {
@@ -229,16 +238,20 @@
   // --- Owner send (hijack) + /done command ---
 
   async function ownerSend() {
+    if (ownerSending) return;
+
     var text = ownerInputEl.value.trim();
     if (!text || !activeCustomerId) return;
     ownerInputEl.value = "";
 
     // /done command = release to bot
     if (text.toLowerCase() === "/done") {
+      ownerSending = true;
+      ownerSendBtn.disabled = true;
       try {
         await fetch("/api/owner/release", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: getApiHeaders(true),
           body: JSON.stringify({ customer_id: activeCustomerId }),
         });
         updateModePill("bot");
@@ -248,6 +261,10 @@
         ownerMessagesEl.appendChild(sys);
         scrollDown(ownerMessagesEl);
       } catch (err) { /* silent */ }
+      finally {
+        ownerSending = false;
+        ownerSendBtn.disabled = false;
+      }
       return;
     }
 
@@ -257,10 +274,12 @@
     );
     scrollDown(ownerMessagesEl);
 
+    ownerSending = true;
+    ownerSendBtn.disabled = true;
     try {
       var resp = await fetch("/api/owner/send", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getApiHeaders(true),
         body: JSON.stringify({ customer_id: activeCustomerId, message: text }),
       });
       var data = await resp.json();
@@ -271,6 +290,10 @@
         addOwnerHint("You're now talking directly. Customer sees your messages. Type /done when finished.");
       }
     } catch (err) { /* silent */ }
+    finally {
+      ownerSending = false;
+      ownerSendBtn.disabled = false;
+    }
   }
 
   ownerSendBtn.addEventListener("click", ownerSend);
@@ -303,7 +326,7 @@
     try {
       var resp = await fetch("/api/owner/query", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getApiHeaders(true),
         body: JSON.stringify({ query: text }),
       });
       var data = await resp.json();
@@ -337,7 +360,7 @@
 
     try {
       var url = "/api/messages/" + activeCustomerId + (ownerLastMsgId ? "?since_id=" + ownerLastMsgId : "");
-      var resp = await fetch(url);
+      var resp = await fetch(url, { headers: getApiHeaders(false) });
       var data = await resp.json();
 
       if (data.messages && data.messages.length > 0) {

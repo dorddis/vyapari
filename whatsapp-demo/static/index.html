@@ -9,7 +9,7 @@
 <body>
   <main class="demo-layout">
     <section class="phone">
-      <div class="wa-header">
+      <div class="wa-header wa-header-clickable" id="chat-header" role="button" tabindex="0" aria-label="Open business profile">
         <div class="avatar">SM</div>
         <div class="header-meta">
           <div class="name">Sharma Motors</div>
@@ -30,6 +30,56 @@
         <input id="message-input" type="text" placeholder="Type a message..." autocomplete="off" maxlength="1000">
         <button id="send-btn" type="submit" aria-label="Send message">&#10148;</button>
       </form>
+
+      <div id="profile-panel" class="profile-panel hidden" aria-hidden="true">
+        <div id="profile-info-view" class="profile-view">
+          <div class="profile-header">
+            <button id="profile-back" class="profile-back" type="button" aria-label="Close profile">&#8592;</button>
+            <div>
+              <div class="profile-kicker">Contact info</div>
+              <div class="profile-header-name">Sharma Motors</div>
+            </div>
+          </div>
+
+          <div class="profile-hero">
+            <div class="profile-avatar">SM</div>
+            <div class="profile-name">Sharma Motors Andheri</div>
+            <div class="profile-meta">Used car dealership</div>
+          </div>
+
+          <div class="profile-card">
+            <div class="profile-card-title">About</div>
+            <div class="profile-card-text">150-point inspected cars, transparent pricing, and selected stock with 6-month warranty.</div>
+          </div>
+
+          <div class="profile-card">
+            <div class="profile-card-title">Catalogue</div>
+            <div class="profile-actions">
+              <button type="button" class="profile-action-btn" id="profile-view-catalogue">View Catalogue</button>
+              <button type="button" class="profile-action-btn" id="profile-budget-catalogue">Cars under Rs 8L</button>
+            </div>
+          </div>
+
+          <div class="profile-card">
+            <div class="profile-card-title">Business hours</div>
+            <div class="profile-card-text">Mon-Sat: 9:00 AM - 8:00 PM</div>
+            <div class="profile-card-text">Sunday: 10:00 AM - 5:00 PM</div>
+          </div>
+        </div>
+
+        <div id="profile-catalogue-view" class="profile-view hidden" aria-hidden="true">
+          <div class="profile-header">
+            <button id="profile-catalogue-back" class="profile-back" type="button" aria-label="Back to profile">&#8592;</button>
+            <div>
+              <div class="profile-kicker">Catalogue</div>
+              <div class="profile-header-name" id="profile-catalogue-title">Live Catalogue</div>
+            </div>
+          </div>
+          <div class="profile-catalogue-body">
+            <div id="profile-catalogue-list" class="catalogue-list catalogue-list-profile"></div>
+          </div>
+        </div>
+      </div>
     </section>
   </main>
 
