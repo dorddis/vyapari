@@ -1,4 +1,4 @@
-"""Escalation detection — regex first pass + GPT-5 mini fallback.
+"""Escalation detection — regex first pass + GPT-5.4-mini fallback.
 
 Extracted from the prototype's conversation.py (lines 53-97) and extended
 with an LLM classifier for ambiguous cases.
@@ -122,7 +122,7 @@ async def trigger_escalation(
 def _classify_escalation_llm(
     customer_msg: str, bot_reply: str
 ) -> tuple[bool, str]:
-    """GPT-5 mini fallback for ambiguous escalation signals.
+    """GPT-5.4-mini fallback for ambiguous escalation signals.
 
     Only called when regex doesn't match but sentiment signals are present.
     Synchronous (blocking) because it's a quick classification call.

@@ -5,7 +5,7 @@
 **NOT** `dorddis/ai-sales-agent` (that's the planning/research repo, separate git).
 
 ## Architecture (LOCKED)
-- **LLM:** OpenAI GPT-5.4 (main), GPT-4.1 nano (classification)
+- **LLM:** OpenAI GPT-5.4 (main), GPT-5.4-mini (classification)
 - **Framework:** OpenAI Agents SDK (`from agents import Agent, Runner, function_tool`)
 - **Backend:** FastAPI + async PostgreSQL (Supabase) / SQLite fallback
 - **Channels:** Web clone (primary demo), WhatsApp Cloud API (bonus)
@@ -41,7 +41,7 @@ vyapari/
     services/
       auth.py                 # OTP login (pyotp + bcrypt)
       relay.py                # Session open/close/forward
-      escalation.py           # Regex + GPT-4.1 nano classifier
+      escalation.py           # Regex + GPT-5.4-mini classifier
     
     channels/
       base.py                 # Abstract ChannelAdapter interface
