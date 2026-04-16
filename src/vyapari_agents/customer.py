@@ -282,6 +282,18 @@ async def run_customer_agent(
     from services.escalation import extract_car_images
     images = extract_car_images(reply, CATALOGUE["cars"])
 
+    # Auto-track interested cars from the conversation
+    reply_lower = reply.lower()
+    msg_lower = message.lower()
+    for car in CATALOGUE["cars"]:
+        if car.get("sold"):
+            continue
+        model_lower = car["model"].lower()
+        if model_lower in reply_lower or model_lower in msg_lower:
+            car_label = f"{car['model']}"
+            if car_label not in customer.interested_cars:
+                customer.interested_cars.append(car_label)
+
     # Post-run escalation detection
     is_escalation = False
     escalation_reason = ""

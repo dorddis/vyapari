@@ -180,12 +180,23 @@ async def list_customers(
         results = [c for c in results if c.lead_status in status_filter]
     if search_query:
         q = search_query.lower()
-        results = [
-            c for c in results
-            if q in c.name.lower()
-            or q in c.wa_id
-            or any(q in car.lower() for car in c.interested_cars)
-        ]
+        filtered = []
+        for c in results:
+            # Match on name, phone, interested cars
+            if (q in c.name.lower()
+                or q in c.wa_id
+                or any(q in car.lower() for car in c.interested_cars)):
+                filtered.append(c)
+                continue
+            # Fallback: search recent message content
+            conv = _conversations.get(c.wa_id)
+            if conv:
+                msgs = _messages.get(conv.id, [])
+                for msg in msgs[-10:]:  # last 10 messages
+                    if q in msg.content.lower():
+                        filtered.append(c)
+                        break
+        results = filtered
     results.sort(key=lambda c: c.last_message_at, reverse=True)
     return results[:limit]
 
