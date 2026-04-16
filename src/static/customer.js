@@ -38,6 +38,20 @@
       .replace(/\n/g, "<br>");
   }
 
+  function escapeHtml(text) {
+    var div = document.createElement("div");
+    div.textContent = text;
+    return div.innerHTML;
+  }
+
+  function getApiHeaders(includeJson) {
+    var headers = {};
+    if (includeJson) headers["Content-Type"] = "application/json";
+    var apiKey = localStorage.getItem("vyapari_api_key");
+    if (apiKey) headers["X-API-Key"] = apiKey;
+    return headers;
+  }
+
   function createBubble(role, text, timestamp, images, isEscalation) {
     var bubble = document.createElement("div");
     bubble.className = "bubble " + role + (isEscalation ? " escalation" : "");
@@ -54,7 +68,7 @@
     }
 
     var textDiv = document.createElement("div");
-    textDiv.innerHTML = waMarkdown(text);
+    textDiv.innerHTML = waMarkdown(escapeHtml(text || ""));
     bubble.appendChild(textDiv);
 
     var meta = document.createElement("div");
@@ -150,7 +164,7 @@
     try {
       var resp = await fetch("/api/chat", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: getApiHeaders(true),
         body: JSON.stringify({
           customer_id: CUSTOMER_ID,
           message: text,
@@ -187,7 +201,7 @@
   async function pollMessages() {
     try {
       var url = "/api/messages/" + CUSTOMER_ID + (lastMessageId ? "?since_id=" + lastMessageId : "");
-      var resp = await fetch(url);
+      var resp = await fetch(url, { headers: getApiHeaders(false) });
       var data = await resp.json();
 
       if (data.messages && data.messages.length > 0) {

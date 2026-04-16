@@ -32,8 +32,8 @@ class MessageLog(Base):
     text: Mapped[str] = mapped_column(Text, default="")
     msg_type: Mapped[str] = mapped_column(String(32), default="text")
     external_msg_id: Mapped[str | None] = mapped_column(String(128), index=True)
-    images: Mapped[list] = mapped_column(JSON, default=list)
-    meta: Mapped[dict] = mapped_column(JSON, default=dict)
+    images: Mapped[list[str]] = mapped_column(JSON, default=list)
+    meta: Mapped[dict[str, object]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         default=_now_utc,

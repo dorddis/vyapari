@@ -6,9 +6,10 @@ Messages are persisted in DB and fetched via polling.
 
 from __future__ import annotations
 
+import hmac
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 import config
@@ -63,6 +64,21 @@ def _new_msg_id(prefix: str) -> str:
     return f"{prefix}-{uuid4()}"
 
 
+def _require_api_auth(request: Request) -> None:
+    """Require API auth token in production, optional in local dev."""
+    requires_auth = config.APP_ENV.lower() == "production" or bool(config.API_AUTH_TOKEN)
+    if not requires_auth:
+        return
+    if not config.API_AUTH_TOKEN:
+        raise HTTPException(status_code=503, detail="API auth token is not configured")
+
+    auth_header = request.headers.get("Authorization", "")
+    bearer = auth_header.removeprefix("Bearer ").strip() if auth_header else ""
+    provided = request.headers.get("X-API-Key") or bearer
+    if not provided or not hmac.compare_digest(provided, config.API_AUTH_TOKEN):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+
 def _to_ui_mode(state_value: ConversationState) -> str:
     """Map backend conversation state to legacy web demo labels."""
     if state_value == ConversationState.ESCALATED:
@@ -73,8 +89,9 @@ def _to_ui_mode(state_value: ConversationState) -> str:
 
 
 @router.post("/chat")
-async def customer_chat(req: ChatRequest) -> dict[str, object]:
+async def customer_chat(req: ChatRequest, request: Request) -> dict[str, object]:
     """Customer sends a message through web clone."""
+    _require_api_auth(request)
     channel = _require_web_clone()
 
     incoming = IncomingMessage(
@@ -92,6 +109,7 @@ async def customer_chat(req: ChatRequest) -> dict[str, object]:
     mode = await state.get_conversation_state(req.customer_id)
     return {
         "reply": reply,
+        "images": [],
         "mode": _to_ui_mode(mode),
         "is_escalation": mode == ConversationState.ESCALATED,
     }
@@ -99,10 +117,12 @@ async def customer_chat(req: ChatRequest) -> dict[str, object]:
 
 @router.get("/messages/{wa_id}")
 async def get_conversation_messages(
+    request: Request,
     wa_id: str,
     since_id: str | None = None,
 ) -> dict[str, object]:
     """Poll buffered web messages for one wa_id."""
+    _require_api_auth(request)
     _require_web_clone()
     mode = await state.get_conversation_state(wa_id)
     messages = await fetch_messages_for_wa_id(wa_id, since_id=since_id)
@@ -114,8 +134,9 @@ async def get_conversation_messages(
 
 
 @router.get("/conversations")
-async def get_conversations() -> dict[str, object]:
+async def get_conversations(request: Request) -> dict[str, object]:
     """Conversation list for owner panel."""
+    _require_api_auth(request)
     _require_web_clone()
     conversations = await list_conversations_from_logs()
     for conversation in conversations:
@@ -126,8 +147,9 @@ async def get_conversations() -> dict[str, object]:
 
 
 @router.post("/owner/send")
-async def owner_send(req: OwnerSendRequest) -> dict[str, object]:
+async def owner_send(req: OwnerSendRequest, request: Request) -> dict[str, object]:
     """Owner sends a message to current customer via relay path."""
+    _require_api_auth(request)
     _require_web_clone()
     owner_wa_id = config.DEFAULT_OWNER_PHONE
 
@@ -136,7 +158,9 @@ async def owner_send(req: OwnerSendRequest) -> dict[str, object]:
     await state.get_or_create_conversation(req.customer_id)
     relay = await state.get_active_relay_for_staff(owner_wa_id)
     if relay is None or relay.customer_wa_id != req.customer_id:
-        await open_relay(owner_wa_id, req.customer_id)
+        session, error = await open_relay(owner_wa_id, req.customer_id)
+        if not session:
+            raise HTTPException(status_code=400, detail=error)
 
     incoming = IncomingMessage(
         wa_id=owner_wa_id,
@@ -152,8 +176,9 @@ async def owner_send(req: OwnerSendRequest) -> dict[str, object]:
 
 
 @router.post("/owner/release")
-async def owner_release(req: OwnerReleaseRequest) -> dict[str, str]:
+async def owner_release(req: OwnerReleaseRequest, request: Request) -> dict[str, str]:
     """Owner releases relay using router command path."""
+    _require_api_auth(request)
     _require_web_clone()
     owner_wa_id = config.DEFAULT_OWNER_PHONE
     incoming = IncomingMessage(
@@ -169,8 +194,9 @@ async def owner_release(req: OwnerReleaseRequest) -> dict[str, str]:
 
 
 @router.post("/owner/query")
-async def oracle_query(req: OracleRequest) -> dict[str, object]:
+async def oracle_query(req: OracleRequest, request: Request) -> dict[str, object]:
     """Owner oracle query via normal owner dispatch path."""
+    _require_api_auth(request)
     _require_web_clone()
     owner_wa_id = config.DEFAULT_OWNER_PHONE
     incoming = IncomingMessage(

@@ -76,12 +76,24 @@ async def fetch_messages_for_wa_id(
     """Fetch timeline messages for one wa_id, formatted for web UI."""
     session_factory = get_session_factory()
     async with session_factory() as session:
-        stmt = (
-            select(MessageLog)
-            .where(MessageLog.wa_id == wa_id)
-            .order_by(MessageLog.created_at.asc())
-            .limit(limit)
-        )
+        anchor_created_at = None
+        if since_id:
+            anchor_stmt = (
+                select(MessageLog.created_at)
+                .where(
+                    MessageLog.id == since_id,
+                    MessageLog.wa_id == wa_id,
+                )
+                .limit(1)
+            )
+            anchor_created_at = (await session.execute(anchor_stmt)).scalar_one_or_none()
+            if anchor_created_at is None:
+                return []
+
+        stmt = select(MessageLog).where(MessageLog.wa_id == wa_id)
+        if anchor_created_at is not None:
+            stmt = stmt.where(MessageLog.created_at > anchor_created_at)
+        stmt = stmt.order_by(MessageLog.created_at.asc()).limit(limit)
         rows = (await session.execute(stmt)).scalars().all()
 
     messages = [
@@ -98,17 +110,7 @@ async def fetch_messages_for_wa_id(
         for row in rows
     ]
 
-    if not since_id:
-        return messages
-
-    found = False
-    result: list[dict] = []
-    for message in messages:
-        if found:
-            result.append(message)
-        if message["id"] == since_id:
-            found = True
-    return result
+    return messages
 
 
 async def list_conversations_from_logs(limit: int = 200) -> list[dict]:

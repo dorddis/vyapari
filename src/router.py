@@ -136,16 +136,34 @@ async def handle_customer_agent(msg: IncomingMessage, conv_state: ConversationSt
     if not config.OPENAI_API_KEY:
         return "OpenAI is not configured yet. Set OPENAI_API_KEY to enable agent replies."
 
-    from agents.customer import run_customer_agent
+    try:
+        from vyapari_agents.customer import run_customer_agent
+    except ImportError:
+        from agents.customer import run_customer_agent
     return await run_customer_agent(msg.wa_id, msg.text or "")
 
 
 async def handle_owner_agent(msg: IncomingMessage, staff_name: str | None) -> str:
     """Run Owner Agent via OpenAI Agents SDK."""
+    try:
+        from services.owner_setup import (
+            handle_owner_setup_message,
+            should_handle_owner_setup,
+        )
+
+        if await should_handle_owner_setup(msg.wa_id, msg.text or ""):
+            return await handle_owner_setup_message(msg.wa_id, msg.text or "")
+    except ImportError:
+        # Owner setup flow is optional in stripped-down builds.
+        pass
+
     if not config.OPENAI_API_KEY:
         return "OpenAI is not configured yet. Set OPENAI_API_KEY to enable owner replies."
 
-    from agents.owner import run_owner_agent
+    try:
+        from vyapari_agents.owner import run_owner_agent
+    except ImportError:
+        from agents.owner import run_owner_agent
     return await run_owner_agent(msg.wa_id, msg.text or "")
 
 
@@ -154,7 +172,10 @@ async def handle_sdr_agent(msg: IncomingMessage, staff_name: str | None) -> str:
     if not config.OPENAI_API_KEY:
         return "SDR agent requires OpenAI. Set OPENAI_API_KEY in .env."
 
-    from agents.owner import run_owner_agent
+    try:
+        from vyapari_agents.owner import run_owner_agent
+    except ImportError:
+        from agents.owner import run_owner_agent
     return await run_owner_agent(msg.wa_id, msg.text or "")
 
 

@@ -1,6 +1,6 @@
 """Pydantic schemas — the shared contracts everyone codes against."""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from pydantic import BaseModel, Field
@@ -17,6 +17,10 @@ from models.enums import (
 )
 
 
+def _now_utc() -> datetime:
+    return datetime.now(timezone.utc)
+
+
 # ---------------------------------------------------------------------------
 # Incoming message (from webhook or web API)
 # ---------------------------------------------------------------------------
@@ -27,7 +31,7 @@ class IncomingMessage(BaseModel):
     text: str | None = Field(None, description="Message text body (None for media-only)")
     msg_id: str = Field(..., description="Channel-specific message ID for dedup and read receipts")
     msg_type: MessageType = Field(default=MessageType.TEXT)
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=_now_utc)
     # Optional media fields
     media_id: str | None = None
     media_url: str | None = None
@@ -106,8 +110,8 @@ class CustomerRecord(BaseModel):
     channel: str = "whatsapp"
     source: str | None = None
     lead_status: LeadStatus = LeadStatus.NEW
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    last_message_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_now_utc)
+    last_message_at: datetime = Field(default_factory=_now_utc)
     interested_cars: list[str] = Field(default_factory=list)
 
 
@@ -117,8 +121,8 @@ class ConversationRecord(BaseModel):
     state: ConversationState = ConversationState.ACTIVE
     assigned_to: str | None = None  # staff wa_id
     escalation_reason: str = ""
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    last_activity: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_now_utc)
+    last_activity: datetime = Field(default_factory=_now_utc)
 
 
 class MessageRecord(BaseModel):
@@ -131,7 +135,7 @@ class MessageRecord(BaseModel):
     images: list[str] = Field(default_factory=list)
     is_escalation: bool = False
     escalation_reason: str = ""
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
+    timestamp: datetime = Field(default_factory=_now_utc)
 
 
 class RelaySessionRecord(BaseModel):
@@ -139,8 +143,8 @@ class RelaySessionRecord(BaseModel):
     staff_wa_id: str
     customer_wa_id: str
     conversation_id: str
-    started_at: datetime = Field(default_factory=datetime.utcnow)
-    last_active: datetime = Field(default_factory=datetime.utcnow)
+    started_at: datetime = Field(default_factory=_now_utc)
+    last_active: datetime = Field(default_factory=_now_utc)
     status: RelaySessionStatus = RelaySessionStatus.ACTIVE
 
 
@@ -150,7 +154,7 @@ class EscalationRecord(BaseModel):
     trigger: str
     summary: str
     status: str = "pending"  # pending / acknowledged / resolved
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_now_utc)
     resolved_at: datetime | None = None
 
 
@@ -158,4 +162,14 @@ class DailyWrapRecord(BaseModel):
     id: str
     date: str  # YYYY-MM-DD
     data: dict[str, Any] = Field(default_factory=dict)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=_now_utc)
+
+
+class OwnerSetupRecord(BaseModel):
+    wa_id: str
+    current_step: str = "business_name"
+    collected: dict[str, Any] = Field(default_factory=dict)
+    active: bool = True
+    started_at: datetime = Field(default_factory=_now_utc)
+    updated_at: datetime = Field(default_factory=_now_utc)
+    completed_at: datetime | None = None
