@@ -14,7 +14,11 @@ Research findings applied:
 import json
 import logging
 
-from agents import Agent, Runner, function_tool, RunContextWrapper, ModelSettings
+from agents import (
+    Agent, Runner, function_tool, RunContextWrapper, ModelSettings,
+    GuardrailFunctionOutput, InputGuardrailTripwireTriggered,
+    input_guardrail, TResponseInputItem,
+)
 
 import config
 import state
@@ -122,12 +126,59 @@ def _build_instructions(ctx: RunContextWrapper[CustomerContext], agent: Agent) -
     return build_customer_system_prompt(
         customer_name=ctx.context.name,
         lead_status=ctx.context.lead_status,
+        source=ctx.context.source,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Prompt injection guardrail
+# ---------------------------------------------------------------------------
+
+_INJECTION_PATTERNS = [
+    "ignore your instructions",
+    "ignore previous instructions",
+    "forget your instructions",
+    "you are now",
+    "system prompt",
+    "reveal your prompt",
+    "show me your instructions",
+    "what are your rules",
+    "act as a",
+    "pretend you are",
+    "jailbreak",
+    "DAN mode",
+]
+
+
+@input_guardrail
+async def prompt_injection_guard(
+    ctx: RunContextWrapper[CustomerContext],
+    agent: Agent,
+    input: str | list[TResponseInputItem],
+) -> GuardrailFunctionOutput:
+    """Block obvious prompt injection attempts."""
+    # Extract text from input
+    text = ""
+    if isinstance(input, str):
+        text = input
+    elif isinstance(input, list):
+        for item in input:
+            if isinstance(item, dict) and item.get("role") == "user":
+                text = item.get("content", "")
+
+    text_lower = text.lower()
+    triggered = any(pattern in text_lower for pattern in _INJECTION_PATTERNS)
+
+    return GuardrailFunctionOutput(
+        output_info={"blocked": triggered, "text": text[:50]},
+        tripwire_triggered=triggered,
     )
 
 
 customer_agent = Agent[CustomerContext](
     name="Sharma Motors Sales Agent",
     instructions=_build_instructions,
+    input_guardrails=[prompt_injection_guard],
     tools=[
         search_catalogue,
         get_item_details,
@@ -193,6 +244,9 @@ async def run_customer_agent(wa_id: str, message: str) -> AgentResponse:
             context=ctx,
         )
         reply = result.final_output or "I'm sorry, I couldn't process that. Please try again."
+    except InputGuardrailTripwireTriggered:
+        log.warning(f"Prompt injection blocked for {wa_id}")
+        reply = f"Main {CATALOGUE.get('dealer', 'Sharma Motors')} ke cars mein help kar sakta hu! Kuch specific dhundh rahe ho?"
     except Exception as e:
         log.error(f"Customer agent error for {wa_id}: {e}", exc_info=True)
         reply = "Sorry, I'm having trouble right now. Please try again in a moment!"
