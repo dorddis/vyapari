@@ -145,7 +145,57 @@ async def handle_customer_agent(msg: IncomingMessage, conv_state: ConversationSt
             return "Sorry, I'm having trouble right now. Please try again!"
 
     from vyapari_agents.customer import run_customer_agent
-    return await run_customer_agent(msg.wa_id, msg.text or "")
+    response = await run_customer_agent(msg.wa_id, msg.text or "")
+
+    # Send car images referenced in the reply
+    if response.images:
+        from channels.base import get_channel
+        channel = get_channel()
+        for img_url in response.images:
+            try:
+                await channel.send_image(msg.wa_id, img_url, caption="")
+            except Exception as e:
+                log.warning(f"Failed to send image {img_url}: {e}")
+
+    # Push escalation notification to owner/assigned staff
+    if response.is_escalation:
+        await _push_escalation_notification(msg.wa_id, response)
+
+    return response.text
+
+
+async def _push_escalation_notification(customer_wa_id: str, response) -> None:
+    """Send escalation notification to the assigned staff or owner."""
+    from channels.base import get_channel
+
+    # Find who to notify: assigned staff, or owner
+    conv = await state.get_conversation(customer_wa_id)
+    notify_wa_id = None
+    if conv and conv.assigned_to:
+        notify_wa_id = conv.assigned_to
+    else:
+        # Notify the owner
+        staff_list = await state.list_staff()
+        for s in staff_list:
+            if s.role.value == "owner":
+                notify_wa_id = s.wa_id
+                break
+
+    if not notify_wa_id:
+        log.warning(f"No one to notify for escalation from {customer_wa_id}")
+        return
+
+    channel = get_channel()
+    notification = (
+        f"ESCALATION\n"
+        f"{response.escalation_summary}\n\n"
+        f"Reply here or open a session to chat with this customer."
+    )
+    try:
+        await channel.send_text(notify_wa_id, notification)
+        log.info(f"Escalation notification sent to {notify_wa_id}")
+    except Exception as e:
+        log.error(f"Failed to send escalation notification: {e}")
 
 
 async def handle_owner_agent(msg: IncomingMessage, staff_name: str | None) -> str:

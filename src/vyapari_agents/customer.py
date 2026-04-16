@@ -18,7 +18,8 @@ from agents import Agent, Runner, function_tool, RunContextWrapper, ModelSetting
 
 import config
 import state
-from vyapari_agents.context import CustomerContext
+from catalogue import CATALOGUE
+from vyapari_agents.context import AgentResponse, CustomerContext
 from vyapari_agents.prompts import build_customer_system_prompt
 from vyapari_agents.tools.catalogue import (
     tool_check_availability,
@@ -149,11 +150,11 @@ customer_agent = Agent[CustomerContext](
 # Run the agent (called from router.handle_customer_agent)
 # ---------------------------------------------------------------------------
 
-async def run_customer_agent(wa_id: str, message: str) -> str:
+async def run_customer_agent(wa_id: str, message: str) -> AgentResponse:
     """Run the Customer Agent for a single message turn.
 
-    Manages session loading, context creation, and post-run escalation detection.
-    Returns the agent's reply text.
+    Manages session loading, context creation, post-run image extraction,
+    and escalation detection. Returns AgentResponse with text + extras.
     """
     # Load customer + conversation state
     customer = await state.get_or_create_customer(wa_id)
@@ -199,15 +200,36 @@ async def run_customer_agent(wa_id: str, message: str) -> str:
     # Store agent reply
     await state.add_message(conversation.id, MessageRole.AGENT, reply)
 
+    # Extract car images referenced in the reply
+    from services.escalation import extract_car_images
+    images = extract_car_images(reply, CATALOGUE["cars"])
+
     # Post-run escalation detection
+    is_escalation = False
+    escalation_reason = ""
+    escalation_summary = ""
     should_escalate, reason = await detect_escalation(message, reply)
     if should_escalate and conversation.state.value != "escalated":
         from models import ConversationState
         await state.set_conversation_state(wa_id, ConversationState.ESCALATED, reason)
+        is_escalation = True
+        escalation_reason = reason
+        escalation_summary = (
+            f"Customer: {customer.name}\n"
+            f"Car interest: {', '.join(customer.interested_cars) or 'browsing'}\n"
+            f"Trigger: {reason}\n"
+            f"Last message: {message[:100]}"
+        )
         log.info(f"Escalation detected for {wa_id}: {reason}")
 
     # Update interested cars from context (tools may have mutated it)
     if ctx.interested_cars != customer.interested_cars:
         customer.interested_cars = ctx.interested_cars
 
-    return reply
+    return AgentResponse(
+        text=reply,
+        images=images,
+        is_escalation=is_escalation,
+        escalation_reason=escalation_reason,
+        escalation_summary=escalation_summary,
+    )

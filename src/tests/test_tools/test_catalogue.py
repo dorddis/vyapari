@@ -57,12 +57,13 @@ def test_compare_items():
     assert "car_2" in result["data"]
 
 
-def test_mark_sold_and_check():
+@pytest.mark.asyncio
+async def test_mark_sold_and_check():
     # Find a car that's available
     search = _parse(tool_search_catalogue())
     if search["data"]:
         car_id = search["data"][0]["id"]
-        sold = _parse(tool_mark_sold(car_id))
+        sold = _parse(await tool_mark_sold(car_id))
         assert sold["success"] is True
 
         avail = _parse(tool_check_availability(car_id))

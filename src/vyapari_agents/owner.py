@@ -105,9 +105,9 @@ def update_item(item_id: int, field: str, value: str) -> str:
 
 
 @function_tool
-def mark_sold(item_id: int) -> str:
-    """Mark a car as sold."""
-    return tool_mark_sold(item_id)
+async def mark_sold(item_id: int) -> str:
+    """Mark a car as sold and notify interested customers."""
+    return await tool_mark_sold(item_id)
 
 
 @function_tool
