@@ -1,7 +1,11 @@
 """WhatsApp Cloud API client - send and receive messages."""
 
+import logging
+
 import httpx
-from config import WHATSAPP_ACCESS_TOKEN, WHATSAPP_API_URL
+from config import WHATSAPP_ACCESS_TOKEN, WHATSAPP_API_URL, WHATSAPP_API_VERSION
+
+log = logging.getLogger("vyapari.whatsapp")
 
 
 async def send_text(to: str, text: str) -> dict:
@@ -66,30 +70,43 @@ async def mark_read(message_id: str) -> dict:
         return resp.json()
 
 
-def extract_message(payload: dict) -> tuple[str, str, str] | None:
-    """Extract (sender_number, message_text, message_id) from webhook payload.
+async def download_media(media_id: str) -> tuple[bytes, str]:
+    """Download media from WhatsApp Cloud API.
 
-    Returns None if this isn't a user text message (could be status update, etc).
+    Two-step process:
+    1. GET graph.facebook.com/{media_id} -> JSON with a `url` field
+    2. GET that url -> actual file bytes
+
+    Returns (file_bytes, mime_type).
+    Raises httpx.HTTPStatusError on failure.
     """
-    try:
-        entry = payload["entry"][0]
-        changes = entry["changes"][0]
-        value = changes["value"]
+    graph_base = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
+    headers = {"Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}"}
 
-        # Skip status updates
-        if "messages" not in value:
-            return None
+    async with httpx.AsyncClient() as client:
+        # Step 1: get the download URL
+        meta_resp = await client.get(
+            f"{graph_base}/{media_id}",
+            headers=headers,
+            timeout=15,
+        )
+        meta_resp.raise_for_status()
+        meta = meta_resp.json()
+        download_url = meta.get("url")
+        if not download_url:
+            raise ValueError(f"WhatsApp media metadata missing 'url': {meta}")
+        mime_type = meta.get("mime_type", "application/octet-stream")
 
-        msg = value["messages"][0]
+        # Step 2: download the actual file bytes
+        file_resp = await client.get(
+            download_url,
+            headers=headers,
+            timeout=60,
+        )
+        file_resp.raise_for_status()
 
-        # Only handle text messages for now
-        if msg["type"] != "text":
-            return None
-
-        sender = msg["from"]  # phone number like "919876543210"
-        text = msg["text"]["body"]
-        msg_id = msg["id"]
-
-        return sender, text, msg_id
-    except (KeyError, IndexError):
-        return None
+        log.info(
+            "Downloaded media %s (%s, %d bytes)",
+            media_id, mime_type, len(file_resp.content),
+        )
+        return file_resp.content, mime_type
