@@ -338,8 +338,8 @@
 
       if (data.messages && data.messages.length > 0) {
         data.messages.forEach(function (msg) {
-          if (msg.role === "owner" || msg.role === "sdr") {
-            messagesEl.appendChild(createBubble("bot", msg.text, msg.timestamp, msg.images || [], false));
+          if (msg.role !== "customer") {
+            messagesEl.appendChild(createBubble("bot", msg.text, msg.timestamp, msg.images || [], msg.is_escalation || false));
             scrollDown();
           }
         });

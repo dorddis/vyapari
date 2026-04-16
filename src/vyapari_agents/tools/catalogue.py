@@ -49,7 +49,7 @@ def tool_search_catalogue(
 
     cars = []
     for car in results:
-        cars.append({
+        entry = {
             "id": car["id"],
             "name": f"{car['year']} {car['make']} {car['model']} {car['variant']}",
             "price_lakhs": car["price_lakhs"],
@@ -57,7 +57,10 @@ def tool_search_catalogue(
             "km_driven": car["km_driven"],
             "color": car["color"],
             "highlight": car.get("highlights", [""])[0] if car.get("highlights") else "",
-        })
+        }
+        if car.get("image_url"):
+            entry["image_url"] = car["image_url"]
+        cars.append(entry)
 
     return json.dumps({
         "success": True,

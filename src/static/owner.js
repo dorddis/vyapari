@@ -22,6 +22,7 @@
   var activeTab = "convos";
   var ownerLastMsgId = null;
   var ownerSending = false;
+  var hijackHintShown = false;
 
   // --- Helpers ---
 
@@ -194,27 +195,40 @@
     updateModePill(mode);
 
     ownerMessagesEl.innerHTML = "";
+    hijackHintShown = false;
     try {
-      var resp = await fetch("/api/messages/" + customerId, { headers: getApiHeaders(false) });
+      var resp = await fetch("/api/conversation/" + customerId, { headers: getApiHeaders(false) });
       var data = await resp.json();
-      data.messages.forEach(function (msg) {
+      var messages = data.messages || [];
+      messages.forEach(function (msg) {
+        var text = msg.text || msg.content || "";
         if (msg.is_escalation) {
           var alert = document.createElement("div");
           alert.className = "system-msg escalation-alert";
           alert.textContent = "ESCALATION: " + (msg.escalation_reason || "Customer needs attention");
           ownerMessagesEl.appendChild(alert);
         }
+        var displayRole = msg.role === "agent" ? "bot" : msg.role;
         ownerMessagesEl.appendChild(
-          createOwnerViewBubble(msg.role, msg.text, msg.timestamp, msg.images || [], msg.is_escalation)
+          createOwnerViewBubble(displayRole, text, msg.timestamp, msg.images || [], msg.is_escalation)
         );
       });
-      if (data.messages.length > 0) {
-        ownerLastMsgId = data.messages[data.messages.length - 1].id;
+      if (messages.length > 0) {
+        ownerLastMsgId = messages[messages.length - 1].id;
+      }
+
+      // Update mode from DB state
+      if (data.conversation_state) {
+        var dbMode = data.conversation_state === "escalated" ? "escalated" :
+                     data.conversation_state === "relay_active" ? "owner" : "bot";
+        updateModePill(dbMode);
+        mode = dbMode;
       }
 
       // Show hint when owner opens an escalated/active convo
       if (mode === "escalated" || mode === "owner") {
         addOwnerHint("Type to reply directly to customer. Type /done to hand back to AI.");
+        hijackHintShown = true;
       }
 
       scrollDown(ownerMessagesEl);
@@ -285,9 +299,10 @@
       var data = await resp.json();
       updateModePill(data.mode);
 
-      // Show hint on first hijack
-      if (data.mode === "owner") {
+      // Show hint on first hijack only
+      if (data.mode === "owner" && !hijackHintShown) {
         addOwnerHint("You're now talking directly. Customer sees your messages. Type /done when finished.");
+        hijackHintShown = true;
       }
     } catch (err) { /* silent */ }
     finally {
