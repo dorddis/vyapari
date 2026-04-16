@@ -104,8 +104,15 @@ async def tool_get_stats(period: str = "today") -> str:
         s = c.lead_status.value
         by_status[s] = by_status.get(s, 0) + 1
 
-    total_conversations = len(state._conversations)
-    total_messages = sum(len(msgs) for msgs in state._messages.values())
+    # Count conversations and messages via proper async API
+    total_conversations = 0
+    total_messages = 0
+    for c in all_customers:
+        conv = await state.get_conversation(c.wa_id)
+        if conv:
+            total_conversations += 1
+            msgs = await state.get_messages(conv.id)
+            total_messages += len(msgs)
 
     # Top queried cars (from interested_cars across customers)
     car_mentions: dict[str, int] = {}

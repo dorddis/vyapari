@@ -25,7 +25,7 @@ async def tool_add_staff(
         })
 
     # Check if already exists
-    existing = state._staff.get(wa_id)
+    existing = await state.get_staff_raw(wa_id)
     if existing and existing.status.value != "removed":
         return json.dumps({
             "success": False,
