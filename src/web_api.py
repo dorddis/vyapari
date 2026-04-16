@@ -1,170 +1,90 @@
-"""REST API endpoints for the web frontend."""
+"""Minimal REST API endpoints for the local chat-only demo."""
 
-import logging
 from dataclasses import asdict
+
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from message_store import (
-    MessageRole, ConversationMode,
-    get_or_create_conversation, add_message, get_messages,
-    list_conversations, set_mode, get_mode,
+    MessageRole,
+    add_message,
+    get_messages,
+    get_or_create_conversation,
+    reset_conversation,
 )
-from conversation import get_reply_rich, inject_owner_message
-from owner_agent import owner_query
-from catalogue import mark_car_sold, CATALOGUE
-
-log = logging.getLogger("vibecon")
 
 router = APIRouter(prefix="/api")
 
 
-# --- Request/Response models ---
-
 class ChatRequest(BaseModel):
-    customer_id: str
-    message: str
-    customer_name: str | None = None
+    """Incoming customer message."""
+
+    customer_id: str = Field(min_length=1, max_length=128)
+    message: str = Field(min_length=1, max_length=1000)
+    customer_name: str | None = Field(default=None, max_length=80)
 
 
-class OwnerSendRequest(BaseModel):
-    customer_id: str
-    message: str
+class ResetRequest(BaseModel):
+    """Conversation reset payload."""
+
+    customer_id: str = Field(min_length=1, max_length=128)
 
 
-class OwnerReleaseRequest(BaseModel):
-    customer_id: str
+def _build_demo_reply(message: str) -> str:
+    """Return a deterministic placeholder reply until the real agent is wired in."""
+    text = message.lower()
 
+    if any(word in text for word in ["price", "budget", "cost", "rate", "kitna"]):
+        return (
+            "Got it. Pricing logic will come from the agent soon. "
+            "For now, this demo only validates the WhatsApp-style chat flow."
+        )
 
-class OracleRequest(BaseModel):
-    query: str
+    if any(word in text for word in ["test drive", "visit", "showroom", "book"]):
+        return (
+            "Great intent signal captured. Once the agent is connected, this will trigger "
+            "test-drive and visit handling."
+        )
 
+    if any(word in text for word in ["compare", "vs", "difference"]):
+        return (
+            "Comparison request noted. Agent tools for catalogue comparison will be added next."
+        )
 
-# --- Customer endpoints ---
-
-@router.post("/chat")
-async def customer_chat(req: ChatRequest):
-    """Customer sends a message. Returns bot reply (or null if owner is active)."""
-    get_or_create_conversation(req.customer_id, req.customer_name)
-
-    # Store customer message
-    add_message(req.customer_id, MessageRole.CUSTOMER, req.message)
-
-    mode = get_mode(req.customer_id)
-
-    # If owner is actively chatting, don't call Gemini
-    if mode == ConversationMode.OWNER:
-        return {
-            "reply": None,
-            "images": [],
-            "is_escalation": False,
-            "escalation_reason": "",
-            "mode": mode.value,
-        }
-
-    # Get AI reply
-    try:
-        result = get_reply_rich(req.customer_id, req.message)
-    except Exception as e:
-        log.error(f"Gemini error: {e}")
-        result = {
-            "text": "Sorry, I'm having trouble right now. Please try again!",
-            "images": [],
-            "is_escalation": False,
-            "escalation_reason": "",
-        }
-
-    # Store bot reply
-    add_message(
-        req.customer_id,
-        MessageRole.BOT,
-        result["text"],
-        images=result["images"],
-        is_escalation=result["is_escalation"],
-        escalation_reason=result.get("escalation_reason", ""),
+    return (
+        "Message received. This is the chat interface shell; we can now plug the real agent "
+        "into this endpoint."
     )
 
-    # Update mode if escalation detected
-    if result["is_escalation"] and mode != ConversationMode.OWNER:
-        set_mode(req.customer_id, ConversationMode.ESCALATED, result.get("escalation_reason", ""))
+
+@router.post("/chat")
+async def customer_chat(req: ChatRequest) -> dict[str, str]:
+    """Store customer message and return a demo reply."""
+    get_or_create_conversation(req.customer_id, req.customer_name or "Demo Customer")
+    add_message(req.customer_id, MessageRole.CUSTOMER, req.message)
+
+    reply_text = _build_demo_reply(req.message)
+    reply_message = add_message(req.customer_id, MessageRole.BOT, reply_text)
 
     return {
-        "reply": result["text"],
-        "images": result["images"],
-        "is_escalation": result["is_escalation"],
-        "escalation_reason": result.get("escalation_reason", ""),
-        "mode": get_mode(req.customer_id).value,
+        "reply": reply_text,
+        "message_id": reply_message.id,
+        "timestamp": reply_message.timestamp,
     }
 
 
 @router.get("/messages/{customer_id}")
-async def get_conversation_messages(customer_id: str, since_id: str | None = None):
-    """Get conversation history. Supports polling with since_id."""
-    messages = get_messages(customer_id, since_id)
-    mode = get_mode(customer_id)
+async def conversation_messages(customer_id: str) -> dict[str, object]:
+    """Return full conversation history for a customer."""
+    messages = get_messages(customer_id)
     return {
         "customer_id": customer_id,
-        "mode": mode.value,
-        "messages": [asdict(m) for m in messages],
+        "messages": [asdict(message) for message in messages],
     }
 
 
-# --- Owner endpoints ---
-
-@router.get("/conversations")
-async def get_conversations():
-    """List all conversations for owner panel."""
-    return {"conversations": list_conversations()}
-
-
-@router.post("/owner/send")
-async def owner_send(req: OwnerSendRequest):
-    """Owner sends a message to a customer (hijack)."""
-    get_or_create_conversation(req.customer_id)
-
-    # Switch to owner mode
-    set_mode(req.customer_id, ConversationMode.OWNER)
-
-    # Store owner message
-    msg = add_message(req.customer_id, MessageRole.OWNER, req.message)
-
-    # Inject into Gemini history for context continuity
-    inject_owner_message(req.customer_id, req.message)
-
-    return {"status": "ok", "message_id": msg.id, "mode": "owner"}
-
-
-@router.post("/owner/release")
-async def owner_release(req: OwnerReleaseRequest):
-    """Owner releases conversation back to bot."""
-    set_mode(req.customer_id, ConversationMode.BOT)
-    return {"status": "ok", "mode": "bot"}
-
-
-@router.post("/owner/query")
-async def oracle_query(req: OracleRequest):
-    """Owner asks the data oracle."""
-    try:
-        result = owner_query(req.query)
-    except Exception as e:
-        log.error(f"Oracle error: {e}")
-        return {"text": "Sorry, something went wrong.", "action": None}
-
-    # Execute catalogue actions if detected
-    if result.get("action"):
-        action = result["action"]
-        if action["action"] == "mark_sold":
-            sold_car = mark_car_sold(action["car_id"])
-            if sold_car:
-                action["success"] = True
-            else:
-                action["success"] = False
-
-    return result
-
-
-@router.get("/catalogue")
-async def get_catalogue():
-    """Get full catalogue (available cars only)."""
-    available = [c for c in CATALOGUE["cars"] if not c.get("sold")]
-    return {"cars": available, "total": len(available)}
+@router.post("/reset")
+async def reset_chat(req: ResetRequest) -> dict[str, object]:
+    """Reset one customer conversation."""
+    deleted = reset_conversation(req.customer_id)
+    return {"reset": deleted}

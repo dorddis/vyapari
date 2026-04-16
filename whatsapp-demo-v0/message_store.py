@@ -133,8 +133,3 @@ def set_mode(customer_id: str, mode: ConversationMode, reason: str = "") -> None
 def get_mode(customer_id: str) -> ConversationMode:
     convo = _conversations.get(customer_id)
     return convo.mode if convo else ConversationMode.BOT
-
-
-def reset_conversation(customer_id: str) -> bool:
-    """Delete one conversation from the in-memory store."""
-    return _conversations.pop(customer_id, None) is not None

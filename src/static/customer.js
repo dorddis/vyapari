@@ -1,211 +1,168 @@
-// Customer phone logic
 (function () {
-  const CUSTOMER_ID = localStorage.getItem("vibecon_cid") || ("demo-" + Math.random().toString(36).slice(2, 8));
-  localStorage.setItem("vibecon_cid", CUSTOMER_ID);
+  const storageKey = "vyapari_demo_customer_id";
+  const customerId = localStorage.getItem(storageKey) || `demo-${Math.random().toString(36).slice(2, 9)}`;
+  localStorage.setItem(storageKey, customerId);
 
-  const prechatScreen = document.getElementById("prechat-screen");
-  const chatScreen = document.getElementById("chat-screen");
-  const prechatBtn = document.getElementById("prechat-start");
+  const messagesEl = document.getElementById("messages");
+  const statusEl = document.getElementById("chat-status");
+  const chatForm = document.getElementById("chat-form");
+  const inputEl = document.getElementById("message-input");
+  const sendBtn = document.getElementById("send-btn");
+  const resetBtn = document.getElementById("reset-chat");
+  const quickActionsEl = document.getElementById("quick-actions");
 
-  const messagesEl = document.getElementById("customer-messages");
-  const inputEl = document.getElementById("customer-input");
-  const sendBtn = document.getElementById("customer-send");
-  const statusEl = document.getElementById("customer-status");
-
-  let lastMessageId = null;
   let sending = false;
-  let chatStarted = false;
-
-  // The video source — determines the greeting context
-  var entrySource = {
-    video: "2021 Hyundai Creta SX Diesel Walkthrough",
-    car: "2021 Hyundai Creta SX",
-    price: "Rs 9.75L",
-  };
-
-  // --- Helpers ---
 
   function formatTime(iso) {
-    if (!iso) return "";
-    var d = new Date(iso);
-    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const date = iso ? new Date(iso) : new Date();
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
 
-  function waMarkdown(text) {
-    return text
-      .replace(/\*(.*?)\*/g, "<b>$1</b>")
-      .replace(/_(.*?)_/g, "<i>$1</i>")
-      .replace(/\n/g, "<br>");
-  }
-
-  function createBubble(role, text, timestamp, images, isEscalation) {
-    var bubble = document.createElement("div");
-    bubble.className = "bubble " + role + (isEscalation ? " escalation" : "");
-
-    if (images && images.length > 0) {
-      images.forEach(function (url) {
-        var img = document.createElement("img");
-        img.src = url;
-        img.loading = "lazy";
-        img.onclick = function () { window.open(url, "_blank"); };
-        img.onerror = function () { this.style.display = "none"; };
-        bubble.appendChild(img);
-      });
-    }
-
-    var textDiv = document.createElement("div");
-    textDiv.innerHTML = waMarkdown(text);
-    bubble.appendChild(textDiv);
-
-    var meta = document.createElement("div");
-    meta.className = "meta";
-    meta.innerHTML = formatTime(timestamp);
-    if (role === "customer") {
-      meta.innerHTML += ' <span class="ticks">&#10003;&#10003;</span>';
-    }
-    bubble.appendChild(meta);
-
-    return bubble;
-  }
-
-  function addSystemMessage(text, cls) {
-    var el = document.createElement("div");
-    el.className = "system-msg" + (cls ? " " + cls : "");
-    el.textContent = text;
-    messagesEl.appendChild(el);
-    scrollDown();
-  }
-
-  function addTypingIndicator() {
-    var el = document.createElement("div");
-    el.className = "typing-indicator";
-    el.id = "typing";
-    el.innerHTML = "<span></span><span></span><span></span>";
-    messagesEl.appendChild(el);
-    scrollDown();
-  }
-
-  function removeTypingIndicator() {
-    var el = document.getElementById("typing");
-    if (el) el.remove();
-  }
-
-  function scrollDown() {
+  function scrollToBottom() {
     messagesEl.scrollTop = messagesEl.scrollHeight;
   }
 
-  // --- Pre-chat → Chat transition ---
+  function appendBubble(role, text, timestamp) {
+    const bubble = document.createElement("div");
+    bubble.className = `bubble ${role}`;
 
-  prechatBtn.addEventListener("click", function () {
-    prechatScreen.style.display = "none";
-    chatScreen.style.display = "flex";
-    chatScreen.classList.remove("hidden");
-    startChat();
-  });
+    const textEl = document.createElement("div");
+    textEl.textContent = text;
+    bubble.appendChild(textEl);
 
-  function startChat() {
-    if (chatStarted) return;
-    chatStarted = true;
+    const metaEl = document.createElement("div");
+    metaEl.className = "meta";
+    metaEl.textContent = formatTime(timestamp);
+    bubble.appendChild(metaEl);
 
-    // Source-aware greeting — bot knows which video brought them
-    addSystemMessage("Messages are end-to-end encrypted.");
-
-    // Small delay to feel natural
-    setTimeout(function () {
-      messagesEl.appendChild(
-        createBubble(
-          "bot",
-          "Hey! Saw you checking out our *" + entrySource.car + "* video \n\n" +
-          "That one's a beauty — single owner, diesel, just *" + entrySource.price + "*. " +
-          "Want the full details, or are you looking at other options too?",
-          new Date().toISOString(),
-          ["https://upload.wikimedia.org/wikipedia/commons/thumb/6/63/2020_Hyundai_Creta_SX_%28O%29_1.5_CRDi_%28front%29.png/800px-2020_Hyundai_Creta_SX_%28O%29_1.5_CRDi_%28front%29.png"],
-          false
-        )
-      );
-      scrollDown();
-    }, 600);
-
-    // Start polling
-    setInterval(pollMessages, 2000);
-    inputEl.focus();
+    messagesEl.appendChild(bubble);
+    scrollToBottom();
   }
 
-  // --- Send message ---
+  function appendSystemMessage(text) {
+    const system = document.createElement("div");
+    system.className = "bubble system";
+    system.textContent = text;
+    messagesEl.appendChild(system);
+    scrollToBottom();
+  }
 
-  async function sendMessage() {
-    var text = inputEl.value.trim();
-    if (!text || sending) return;
+  function addTyping() {
+    const typing = document.createElement("div");
+    typing.className = "typing";
+    typing.id = "typing-indicator";
+    typing.innerHTML = "<span></span><span></span><span></span>";
+    messagesEl.appendChild(typing);
+    scrollToBottom();
+  }
 
-    sending = true;
+  function removeTyping() {
+    const typing = document.getElementById("typing-indicator");
+    if (typing) {
+      typing.remove();
+    }
+  }
+
+  function setSendingState(isSending) {
+    sending = isSending;
+    sendBtn.disabled = isSending;
+    statusEl.textContent = isSending ? "typing..." : "online";
+  }
+
+  async function loadHistory() {
+    try {
+      const response = await fetch(`/api/messages/${customerId}`);
+      if (!response.ok) {
+        throw new Error("Failed to load history");
+      }
+      const data = await response.json();
+      messagesEl.innerHTML = "";
+
+      if (!Array.isArray(data.messages) || data.messages.length === 0) {
+        appendSystemMessage("Demo mode: UI-only shell for WhatsApp chat. Connect GPT agent to /api/chat.");
+        appendBubble("bot", "Namaste! Ask about cars, pricing, or test drive to test the flow.");
+        return;
+      }
+
+      data.messages.forEach((message) => {
+        if (message.role === "customer") {
+          appendBubble("customer", message.text, message.timestamp);
+        } else {
+          appendBubble("bot", message.text, message.timestamp);
+        }
+      });
+    } catch (error) {
+      appendSystemMessage("Could not load previous chat. You can still continue.");
+    }
+  }
+
+  async function sendMessage(text) {
+    const cleanText = text.trim();
+    if (!cleanText || sending) {
+      return;
+    }
+
+    appendBubble("customer", cleanText, new Date().toISOString());
     inputEl.value = "";
-    sendBtn.disabled = true;
-
-    messagesEl.appendChild(createBubble("customer", text, new Date().toISOString(), [], false));
-    scrollDown();
-
-    statusEl.textContent = "typing...";
-    addTypingIndicator();
+    setSendingState(true);
+    addTyping();
 
     try {
-      var resp = await fetch("/api/chat", {
+      const response = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          customer_id: CUSTOMER_ID,
-          message: text,
-          customer_name: "Customer (from Creta video)",
+          customer_id: customerId,
+          customer_name: "Demo Customer",
+          message: cleanText,
         }),
       });
-      var data = await resp.json();
 
-      removeTypingIndicator();
-      statusEl.textContent = "online";
-
-      if (data.reply) {
-        messagesEl.appendChild(
-          createBubble("bot", data.reply, new Date().toISOString(), data.images || [], data.is_escalation)
-        );
-        if (data.is_escalation) {
-          addSystemMessage("Connecting you with our team...", "escalation-alert");
-        }
+      if (!response.ok) {
+        throw new Error("Failed to send");
       }
-      scrollDown();
-    } catch (err) {
-      removeTypingIndicator();
-      statusEl.textContent = "online";
-      addSystemMessage("Connection error. Please try again.");
+
+      const data = await response.json();
+      removeTyping();
+      appendBubble("bot", data.reply || "No reply from demo endpoint.", data.timestamp);
+    } catch (error) {
+      removeTyping();
+      appendSystemMessage("Send failed. Check backend and try again.");
+    } finally {
+      setSendingState(false);
+      inputEl.focus();
     }
-
-    sending = false;
-    sendBtn.disabled = false;
-    inputEl.focus();
   }
 
-  // --- Poll for owner messages ---
-
-  async function pollMessages() {
+  async function resetConversation() {
     try {
-      var url = "/api/messages/" + CUSTOMER_ID + (lastMessageId ? "?since_id=" + lastMessageId : "");
-      var resp = await fetch(url);
-      var data = await resp.json();
-
-      if (data.messages && data.messages.length > 0) {
-        data.messages.forEach(function (msg) {
-          if (msg.role === "owner") {
-            messagesEl.appendChild(createBubble("bot", msg.text, msg.timestamp, msg.images || [], false));
-            scrollDown();
-          }
-        });
-        lastMessageId = data.messages[data.messages.length - 1].id;
-      }
-    } catch (err) { /* silent */ }
+      await fetch("/api/reset", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ customer_id: customerId }),
+      });
+      await loadHistory();
+    } catch (error) {
+      appendSystemMessage("Reset failed. Try again.");
+    }
   }
 
-  // --- Events ---
-
-  sendBtn.addEventListener("click", sendMessage);
-  inputEl.addEventListener("keydown", function (e) {
-    if (e.key === "Enter") sendMessage();
+  chatForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    void sendMessage(inputEl.value);
   });
+
+  resetBtn.addEventListener("click", () => {
+    void resetConversation();
+  });
+
+  quickActionsEl.addEventListener("click", (event) => {
+    const target = event.target;
+    if (!(target instanceof HTMLButtonElement)) {
+      return;
+    }
+    void sendMessage(target.textContent || "");
+  });
+
+  void loadHistory();
 })();

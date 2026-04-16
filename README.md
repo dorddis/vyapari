@@ -30,16 +30,15 @@ See `docs/DESIGN_DOC.md` for the full specification.
 
 ```bash
 cd src
-cp ../.env.example .env          # fill in your keys
+cp ../.env.example .env
 pip install -r requirements.txt
-python main.py                   # http://localhost:8000
+python3 main.py                  # http://localhost:3000
 ```
 
-For WhatsApp webhook testing:
-```bash
-ngrok http 8000                  # expose local server
-# Set the ngrok URL as webhook in Meta App Dashboard
-```
+Current local demo scope is intentionally minimal:
+- Single WhatsApp-style customer chat interface
+- Quick message chips for common buyer intents
+- Lightweight `/api/chat` placeholder endpoint to plug in the real agent later
 
 ## Project Structure
 
@@ -49,7 +48,7 @@ vyapari/
 |-- data/                  # Sharma Motors demo data (20 cars, FAQs, business profile)
 |-- research/              # Implementation reference (WhatsApp API, OpenAI Agents SDK)
 |-- src/                   # Application code
-|   |-- main.py            # FastAPI entry point + WhatsApp webhook
+|   |-- main.py            # FastAPI entry point for local web demo
 |   |-- config.py          # Environment config
 |   |-- whatsapp.py        # WhatsApp Cloud API client
 |   |-- catalogue.py       # Catalogue queries
@@ -57,7 +56,7 @@ vyapari/
 |   |-- owner_agent.py     # Owner oracle agent
 |   |-- message_store.py   # In-memory conversation state
 |   |-- web_api.py         # REST API for web frontend
-|   |-- static/            # Web demo frontend (2 phone frames)
+|   |-- static/            # Web demo frontend (single chat interface)
 |-- .env.example           # Environment template
 ```
 

@@ -6,7 +6,7 @@ load_dotenv()
 
 # Paths
 BASE_DIR = Path(__file__).parent
-DATA_DIR = BASE_DIR.parent / "data"
+DATA_DIR = BASE_DIR.parent / "demo-data"
 STATIC_DIR = BASE_DIR / "static"
 
 # WhatsApp Cloud API
@@ -21,4 +21,4 @@ GEMINI_MODEL = "gemini-2.5-flash"
 
 # Server
 HOST = os.getenv("HOST", "0.0.0.0")
-PORT = int(os.getenv("PORT", "3000"))
+PORT = int(os.getenv("PORT", "8000"))
