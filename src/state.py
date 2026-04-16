@@ -494,3 +494,18 @@ async def reset_state() -> None:
     _owner_setup_flows.clear()
     _processed_msg_ids.clear()
     _locks.clear()
+
+
+async def reset_customer_state(customer_wa_id: str) -> None:
+    """Clear one customer's runtime state without affecting global staff state."""
+    conv = _conversations.pop(customer_wa_id, None)
+    _customers.pop(customer_wa_id, None)
+    _locks.pop(customer_wa_id, None)
+
+    if conv:
+        _messages.pop(conv.id, None)
+        _escalations.pop(conv.id, None)
+
+    for staff_wa_id, session in list(_relay_sessions.items()):
+        if session.customer_wa_id == customer_wa_id:
+            _relay_sessions.pop(staff_wa_id, None)

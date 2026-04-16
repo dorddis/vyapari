@@ -6,6 +6,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _split_csv(value: str) -> list[str]:
+    return [item.strip() for item in value.split(",") if item.strip()]
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -59,7 +63,7 @@ CHANNEL_MODE = os.getenv("CHANNEL_MODE", "web_clone")  # "whatsapp" | "web_clone
 # WhatsApp Cloud API
 # ---------------------------------------------------------------------------
 WHATSAPP_ENABLED = os.getenv("WHATSAPP_ENABLED", "false").lower() == "true"
-WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "hackathon-verify-token")
+WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
 WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
@@ -69,6 +73,7 @@ WHATSAPP_API_URL = (
 )
 META_APP_SECRET = os.getenv("META_APP_SECRET", "")
 META_APP_ID = os.getenv("META_APP_ID", "")
+API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "")
 
 # ---------------------------------------------------------------------------
 # Business defaults (single-tenant demo)
@@ -99,3 +104,11 @@ HOST = os.getenv("HOST", "0.0.0.0")
 PORT = int(os.getenv("PORT", "8000"))
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")
 PUBLIC_BASE_URL = os.getenv("PUBLIC_BASE_URL", f"http://localhost:{PORT}")
+
+# CORS
+CORS_ALLOW_ORIGINS = _split_csv(
+    os.getenv(
+        "CORS_ALLOW_ORIGINS",
+        "http://localhost:8000,http://127.0.0.1:8000,http://localhost:3000,http://127.0.0.1:3000",
+    )
+)
