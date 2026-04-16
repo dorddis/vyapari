@@ -89,11 +89,9 @@ async def verify_login(wa_id: str, otp_input: str) -> tuple[bool, str]:
     """
     staff = await state.get_staff(wa_id)
 
-    # Check if there's even an invited record (get_staff filters out REMOVED
-    # but we also need to find INVITED ones)
+    # get_staff filters out REMOVED but we also need to find INVITED ones
     if not staff:
-        # Look directly — get_staff returns None for removed, but we need invited
-        raw = state._staff.get(wa_id)
+        raw = await state.get_staff_raw(wa_id)
         if raw and raw.status == StaffStatus.INVITED:
             staff = raw
         else:
@@ -167,7 +165,7 @@ async def handle_login_message(wa_id: str, text: str) -> str:
     # Step 1: /login command -> prompt for OTP
     if text.lower().startswith("/login"):
         # Check if there's a pending invite
-        raw = state._staff.get(wa_id)
+        raw = await state.get_staff_raw(wa_id)
         if raw and raw.status == StaffStatus.ACTIVE:
             return f"You're already logged in as {raw.role.value}!"
 

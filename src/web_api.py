@@ -195,15 +195,7 @@ async def list_staff():
 @router.post("/reset")
 async def reset_conversation(req: ResetRequest):
     """Reset a customer's conversation (for demo purposes)."""
-    from models import ConversationState
-
-    conv = await state.get_conversation(req.customer_id)
-    if conv:
-        if conv.id in state._messages:
-            state._messages[conv.id].clear()
-        conv.state = ConversationState.ACTIVE
-        conv.escalation_reason = ""
-
+    await state.reset_customer_state(req.customer_id)
     reset_outbox()
     return {"status": "ok", "customer_id": req.customer_id}
 
@@ -215,6 +207,59 @@ async def get_catalogue():
 
     available = [c for c in CATALOGUE["cars"] if not c.get("sold")]
     return {"cars": available, "total": len(available)}
+
+
+# ---------------------------------------------------------------------------
+# Voice upload (for voice note demo)
+# ---------------------------------------------------------------------------
+
+@router.post("/voice")
+async def voice_chat(
+    wa_id: str = Form(...),
+    customer_name: str = Form(""),
+    file: UploadFile = File(...),
+):
+    """Upload a voice note, transcribe it, process through the agent.
+
+    Returns both the text reply and an audio reply (base64-encoded Opus).
+    """
+    from services.voice import generate_voice_reply, transcribe_voice_note
+
+    contents = await file.read()
+    mime = file.content_type or "audio/ogg"
+
+    # Transcribe voice to text
+    transcribed_text = await transcribe_voice_note(contents, mime)
+
+    # Create an IncomingMessage with the transcribed text
+    msg = IncomingMessage(
+        wa_id=wa_id,
+        text=transcribed_text,
+        msg_id=f"web_{uuid4().hex[:16]}",
+        msg_type=MessageType.VOICE,
+        sender_name=customer_name or None,
+    )
+
+    reply = await dispatch(msg)
+    pending = get_pending_messages(wa_id)
+
+    # Generate voice reply
+    voice_reply_b64 = None
+    if reply and config.VOICE_REPLY_ENABLED:
+        try:
+            voice_bytes = await generate_voice_reply(reply)
+            voice_reply_b64 = base64.b64encode(voice_bytes).decode("utf-8")
+        except Exception as e:
+            log.warning(f"Voice reply generation failed: {e}")
+
+    return {
+        "reply": reply,
+        "transcribed_text": transcribed_text,
+        "voice_reply": voice_reply_b64,
+        "voice_mime": "audio/ogg; codecs=opus",
+        "messages": pending,
+        "wa_id": wa_id,
+    }
 
 
 # ---------------------------------------------------------------------------

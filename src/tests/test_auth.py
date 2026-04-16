@@ -1,4 +1,4 @@
-"""OTP authentication tests — 8 scenarios."""
+"""OTP authentication tests -- 8 scenarios."""
 
 import pytest
 import pytest_asyncio
@@ -25,7 +25,7 @@ async def test_generate_otp_returns_6_digits():
 @pytest.mark.asyncio
 async def test_create_invite_stores_staff_as_invited():
     await create_invite("919111000002", "Raj", StaffRole.SDR, added_by="919999888777")
-    staff = state._staff.get("919111000002")
+    staff = await state.get_staff_raw("919111000002")
     assert staff is not None
     assert staff.status == StaffStatus.INVITED
     assert staff.name == "Raj"
@@ -39,7 +39,7 @@ async def test_correct_otp_activates_staff():
     success, msg = await verify_login("919111000003", otp)
     assert success is True
     assert "Verified" in msg
-    staff = state._staff.get("919111000003")
+    staff = await state.get_staff("919111000003")
     assert staff.status == StaffStatus.ACTIVE
     assert staff.otp_hash is None
 
@@ -83,7 +83,7 @@ async def test_login_flow_full_conversation():
     assert "verified" in reply.lower() or "welcome" in reply.lower()
 
     # Staff is now active
-    staff = state._staff.get("919111000007")
+    staff = await state.get_staff("919111000007")
     assert staff.status == StaffStatus.ACTIVE
 
 

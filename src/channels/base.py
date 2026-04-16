@@ -81,6 +81,13 @@ class ChannelAdapter(ABC):
         ...
 
     @abstractmethod
+    async def send_audio(
+        self, to: str, audio_bytes: bytes, mime_type: str = "audio/ogg; codecs=opus"
+    ) -> str:
+        """Send an audio/voice note. Returns message ID."""
+        ...
+
+    @abstractmethod
     async def send_template(
         self,
         to: str,

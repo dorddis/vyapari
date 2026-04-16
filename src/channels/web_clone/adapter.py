@@ -85,6 +85,16 @@ class WebCloneAdapter(ChannelAdapter):
     async def send_image(self, to: str, image_url: str, caption: str = "") -> str:
         return _enqueue(to, "image", {"url": image_url, "caption": caption})
 
+    async def send_audio(
+        self, to: str, audio_bytes: bytes, mime_type: str = "audio/ogg; codecs=opus"
+    ) -> str:
+        import base64
+        b64 = base64.b64encode(audio_bytes).decode("utf-8")
+        return _enqueue(to, "audio", {
+            "data": b64,
+            "mime_type": mime_type,
+        })
+
     async def send_buttons(
         self,
         to: str,
