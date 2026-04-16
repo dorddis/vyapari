@@ -29,7 +29,7 @@ See `docs/DESIGN_DOC.md` for the full specification.
 ## Quick Start
 
 ```bash
-cd src
+cd whatsapp-demo
 cp ../.env.example .env
 pip install -r requirements.txt
 python3 main.py                  # http://localhost:3000
@@ -47,16 +47,17 @@ vyapari/
 |-- docs/                  # Design doc, demo flow, requirements
 |-- data/                  # Sharma Motors demo data (20 cars, FAQs, business profile)
 |-- research/              # Implementation reference (WhatsApp API, OpenAI Agents SDK)
-|-- src/                   # Application code
+|-- whatsapp-demo/         # Isolated runnable WhatsApp demo (chat-only)
 |   |-- main.py            # FastAPI entry point for local web demo
+|   |-- config.py          # Demo config
+|   |-- message_store.py   # In-memory chat state
+|   |-- web_api.py         # Demo REST API
+|   |-- static/            # Demo frontend assets
+|-- src/                   # Application code
 |   |-- config.py          # Environment config
-|   |-- whatsapp.py        # WhatsApp Cloud API client
 |   |-- catalogue.py       # Catalogue queries
 |   |-- conversation.py    # Customer agent (Gemini, to be swapped to OpenAI)
 |   |-- owner_agent.py     # Owner oracle agent
-|   |-- message_store.py   # In-memory conversation state
-|   |-- web_api.py         # REST API for web frontend
-|   |-- static/            # Web demo frontend (single chat interface)
 |-- .env.example           # Environment template
 ```
 
@@ -66,8 +67,8 @@ vyapari/
 |------|-------|---------------|
 | Customer Agent | `conversation.py` | Swap Gemini -> OpenAI Agents SDK, add function tools |
 | Owner Agent | `owner_agent.py` | OpenAI Agents SDK, relay tools, staff mgmt tools |
-| Router + Relay | `message_store.py`, `web_api.py` | State machine, `/login`, `/done`, `/switch` |
-| WhatsApp UX | `whatsapp.py` | Interactive messages (lists, buttons), typing indicator |
+| Router + Relay | `whatsapp-demo/message_store.py`, `whatsapp-demo/web_api.py` | Chat state and demo API flow |
+| WhatsApp UX | `whatsapp-demo/static/*` | UI interactions and chat experience |
 
 ## Key Docs
 

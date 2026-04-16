@@ -465,7 +465,7 @@ These are “contract tests” for the tool layer the agents rely on (names may 
 
 ### 7.2 Web demo fallback API (prototype parity)
 
-If using `prototypes/whatsapp-demo-v0/`, validate:
+If using `whatsapp-demo/`, validate:
 
 **WEB-API-01** — `/api/chat` happy path  
 - Steps: POST customer message  
