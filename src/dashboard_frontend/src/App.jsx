@@ -1,5 +1,7 @@
 import { startTransition, useDeferredValue, useState } from "react";
 import {
+  aiRecommendations,
+  COLORS,
   conversationSeeds,
   insightCards,
   inventorySeeds,
@@ -7,6 +9,7 @@ import {
   ownerAgentSeed,
   priceBandDemand,
   sourceBreakdown,
+  topComparisonCars,
   weeklyLeadTrend,
 } from "./data";
 
@@ -33,10 +36,6 @@ function App() {
   );
 
   const deferredLeadQuery = useDeferredValue(leadQuery);
-  const selectedConversation =
-    conversations.find((conversation) => conversation.id === selectedId) ??
-    conversations[0];
-
   const visibleConversations = conversations.filter((conversation) => {
     const matchesFilter =
       leadFilter === "all"
@@ -59,6 +58,11 @@ function App() {
       searchableText.includes(deferredLeadQuery.trim().toLowerCase())
     );
   });
+
+  const selectedConversation =
+    visibleConversations.find((conversation) => conversation.id === selectedId) ??
+    visibleConversations[0] ??
+    conversations[0];
 
   const urgentLead = conversations.find((conversation) => conversation.needsAttention);
   const attentionCount = conversations.filter(
@@ -103,7 +107,7 @@ function App() {
     }
 
     const nextMessage = {
-      id: `owner-${Date.now()}`,
+      id: `owner-${crypto.randomUUID()}`,
       role: "owner",
       channel: "dashboard",
       text: replyDraft.trim(),
@@ -134,7 +138,7 @@ function App() {
     }
 
     const nextMessage = {
-      id: `system-${Date.now()}`,
+      id: `system-${crypto.randomUUID()}`,
       role: "system",
       channel: "dashboard",
       text: "Owner handed the conversation back to the AI agent.",
@@ -165,9 +169,9 @@ function App() {
     startTransition(() => {
       setAgentMessages((current) => [
         ...current,
-        { id: `user-${Date.now()}`, role: "owner", text: prompt },
+        { id: `user-${crypto.randomUUID()}`, role: "owner", text: prompt },
         {
-          id: `agent-${Date.now() + 1}`,
+          id: `agent-${crypto.randomUUID()}`,
           role: "agent",
           text: generateAgentAnswer(prompt, conversations),
         },
@@ -215,7 +219,7 @@ function App() {
         source: "Added from quick form",
       };
 
-    const nextId = `car-${Date.now()}`;
+    const nextId = `car-${crypto.randomUUID()}`;
 
     startTransition(() => {
       setInventory((current) => [
@@ -236,7 +240,7 @@ function App() {
   function handleUploadSheet() {
     const importedVehicles = [
       {
-        id: `car-import-${Date.now()}`,
+        id: `car-import-${crypto.randomUUID()}`,
         name: "2021 Mahindra XUV300 W8",
         status: "available",
         price: "7.8L",
@@ -244,7 +248,7 @@ function App() {
         source: "Imported from uploaded sheet",
       },
       {
-        id: `car-import-${Date.now() + 1}`,
+        id: `car-import-${crypto.randomUUID()}`,
         name: "2019 Honda Amaze VX",
         status: "available",
         price: "5.4L",
@@ -253,66 +257,55 @@ function App() {
       },
     ];
 
+    const existingNames = new Set(inventory.map((item) => item.name));
+    const freshImports = importedVehicles.filter(
+      (vehicle) => !existingNames.has(vehicle.name),
+    );
+
+    if (!freshImports.length) {
+      setInventoryNotice("No new vehicles to import.");
+      return;
+    }
+
     startTransition(() => {
-      setInventory((current) => {
-        const existingNames = new Set(current.map((item) => item.name));
-        const freshImports = importedVehicles.filter(
-          (vehicle) => !existingNames.has(vehicle.name),
-        );
-        return freshImports.length ? [...freshImports, ...current] : current;
-      });
-      setInventoryNotice("Demo import complete. 2 vehicles parsed from uploaded sheet.");
+      setInventory((current) => [...freshImports, ...current]);
+      setInventoryNotice(
+        `Demo import complete. ${freshImports.length} vehicle(s) parsed from uploaded sheet.`,
+      );
     });
   }
 
   function handleUpdatePrice(itemId) {
+    const item = inventory.find((i) => i.id === itemId);
+    if (!item) return;
+
+    const nextPrice = lowerPriceByStep(item.price, 0.1);
+
     startTransition(() => {
-      let updatedName = "Vehicle";
-      let updatedPrice = "";
-
       setInventory((current) =>
-        current.map((item) => {
-          if (item.id !== itemId) {
-            return item;
-          }
-
-          const nextPrice = lowerPriceByStep(item.price, 0.1);
-          updatedName = item.name;
-          updatedPrice = nextPrice;
-
-          return {
-            ...item,
-            price: nextPrice,
-            source: "Price adjusted in dashboard",
-          };
-        }),
+        current.map((i) =>
+          i.id === itemId
+            ? { ...i, price: nextPrice, source: "Price adjusted in dashboard" }
+            : i,
+        ),
       );
-
-      setInventoryNotice(`${updatedName} price updated to ${updatedPrice}.`);
+      setInventoryNotice(`${item.name} price updated to ${nextPrice}.`);
     });
   }
 
   function handleMarkSold(itemId) {
+    const item = inventory.find((i) => i.id === itemId);
+    if (!item) return;
+
     startTransition(() => {
-      let soldVehicle = "Vehicle";
-
       setInventory((current) =>
-        current.map((item) => {
-          if (item.id !== itemId) {
-            return item;
-          }
-
-          soldVehicle = item.name;
-
-          return {
-            ...item,
-            status: "sold",
-            source: "Marked sold from dashboard",
-          };
-        }),
+        current.map((i) =>
+          i.id === itemId
+            ? { ...i, status: "sold", source: "Marked sold from dashboard" }
+            : i,
+        ),
       );
-
-      setInventoryNotice(`${soldVehicle} marked as sold.`);
+      setInventoryNotice(`${item.name} marked as sold.`);
     });
   }
 
@@ -580,7 +573,7 @@ function InboxView({
             {selectedConversation.messages.map((message) => (
               <article
                 key={message.id}
-                className={`message-bubble ${message.role} ${message.role === "system" ? "system" : ""}`}
+                className={`message-bubble ${message.role}`}
               >
                 {message.role !== "system" ? (
                   <div className="message-label">
@@ -693,17 +686,17 @@ function InventoryView({
     {
       label: "Available",
       value: inventory.filter((item) => item.status === "available").length,
-      color: "#2b7a4b",
+      color: COLORS.green,
     },
     {
       label: "Reserved",
       value: inventory.filter((item) => item.status === "reserved").length,
-      color: "#b34e35",
+      color: COLORS.red,
     },
     {
       label: "Sold",
       value: inventory.filter((item) => item.status === "sold").length,
-      color: "#b07b17",
+      color: COLORS.gold,
     },
   ];
 
@@ -911,25 +904,12 @@ function InsightsView({ conversations, insightCards, inventory }) {
         </div>
 
         <div className="recommendation-list">
-          <div className="recommendation-item">
-            <strong>Jump into Aman now</strong>
-            <p>
-              Strong close potential. Finance concern is the last blocker and the
-              customer already asked for Rajesh by name.
-            </p>
-          </div>
-          <div className="recommendation-item">
-            <strong>Push 6L-9L SUVs in the next reel</strong>
-            <p>
-              Current demand is clustered in the mid-range family SUV segment.
-            </p>
-          </div>
-          <div className="recommendation-item">
-            <strong>Add a delivery FAQ</strong>
-            <p>
-              Customers asked about delivery and location repeatedly this week.
-            </p>
-          </div>
+          {aiRecommendations.map((rec) => (
+            <div key={rec.title} className="recommendation-item">
+              <strong>{rec.title}</strong>
+              <p>{rec.text}</p>
+            </div>
+          ))}
         </div>
 
         <div className="signal-bar">
@@ -943,7 +923,7 @@ function InsightsView({ conversations, insightCards, inventory }) {
           </div>
           <div>
             <span>Cars with highest comparison traffic</span>
-            <strong>Nexon, Brezza</strong>
+            <strong>{topComparisonCars}</strong>
           </div>
         </div>
       </section>
@@ -1080,14 +1060,14 @@ function buildLeadScores(conversation) {
     conversation.status === "hot" ? 88 : conversation.status === "warm" ? 72 : 54;
   const urgency = conversation.needsAttention ? 93 : conversation.agentMode === "human" ? 70 : 46;
   const clarity =
-    conversation.objection.includes("high") || conversation.objection.includes("confidence")
+    conversation.objection?.includes("high") || conversation.objection?.includes("confidence")
       ? 67
       : 79;
 
   return [
-    { label: "Buying intent", value: buyingIntent, color: "#2b7a4b" },
-    { label: "Owner urgency", value: urgency, color: "#b34e35" },
-    { label: "Close clarity", value: clarity, color: "#d86f31" },
+    { label: "Buying intent", value: buyingIntent, color: COLORS.green },
+    { label: "Owner urgency", value: urgency, color: COLORS.red },
+    { label: "Close clarity", value: clarity, color: COLORS.orange },
   ];
 }
 

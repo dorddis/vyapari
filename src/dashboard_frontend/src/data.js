@@ -1,9 +1,19 @@
+export const COLORS = {
+  green: "#2b7a4b",
+  red: "#b34e35",
+  orange: "#d86f31",
+  gold: "#b07b17",
+  amber: "#c78d45",
+  yellow: "#e5c07b",
+  greenDark: "#1f6d43",
+};
+
 export const conversationSeeds = [
   {
     id: "lead-aman",
     name: "Aman",
     source: "Creta reel",
-    phone: "+91 98765 44120",
+    phone: "+91 00000 00001",
     status: "hot",
     needsAttention: true,
     waitingSince: "2m ago",
@@ -64,7 +74,7 @@ export const conversationSeeds = [
     id: "lead-ramesh",
     name: "Ramesh",
     source: "Direct WhatsApp",
-    phone: "+91 99882 31044",
+    phone: "+91 00000 00002",
     status: "warm",
     needsAttention: false,
     waitingSince: "active now",
@@ -104,7 +114,7 @@ export const conversationSeeds = [
     id: "lead-neha",
     name: "Neha",
     source: "Fortuner reel",
-    phone: "+91 98110 44331",
+    phone: "+91 00000 00003",
     status: "new",
     needsAttention: false,
     waitingSince: "6m ago",
@@ -178,16 +188,17 @@ export const inventorySeeds = [
   },
 ];
 
+// Values reflect the 3 seed conversations; update when more are added.
 export const insightCards = [
   {
     label: "Leads Today",
-    value: "12",
-    note: "+4 from yesterday",
+    value: "3",
+    note: "+1 from yesterday",
   },
   {
     label: "Hot Leads",
-    value: "3",
-    note: "2 need owner follow-up",
+    value: "1",
+    note: "1 needs owner follow-up",
   },
   {
     label: "Top Price Band",
@@ -209,52 +220,34 @@ export const ownerAgentSeed = [
   },
 ];
 
-export const onboardingSteps = [
-  {
-    id: "1",
-    title: "Watch the urgent leads",
-    text: "Open the inbox and let the agent handle the routine conversations first.",
-  },
-  {
-    id: "2",
-    title: "Reply only when it matters",
-    text: "Take over a thread when a buyer is warm, confused, or ready to negotiate.",
-  },
-  {
-    id: "3",
-    title: "Ask the agent for guidance",
-    text: "Use the owner chat to ask for trends, recommendations, or follow-up ideas.",
-  },
-];
-
 export const priceBandDemand = [
   {
     label: "Under 5L",
     value: 4,
     display: "4",
-    color: "#d86f31",
+    color: COLORS.orange,
   },
   {
     label: "6L-9L",
     value: 5,
     display: "5",
-    color: "#2b7a4b",
+    color: COLORS.green,
   },
   {
     label: "9L+",
     value: 3,
     display: "3",
-    color: "#b34e35",
+    color: COLORS.red,
   },
 ];
 
 export const weeklyLeadTrend = [
-  { label: "Mon", value: 5, display: "5", color: "#c78d45" },
-  { label: "Tue", value: 7, display: "7", color: "#d86f31" },
-  { label: "Wed", value: 6, display: "6", color: "#b07b17" },
-  { label: "Thu", value: 9, display: "9", color: "#2b7a4b" },
-  { label: "Fri", value: 12, display: "12", color: "#1f6d43" },
-  { label: "Sat", value: 11, display: "11", color: "#2b7a4b" },
+  { label: "Mon", value: 5, display: "5", color: COLORS.amber },
+  { label: "Tue", value: 7, display: "7", color: COLORS.orange },
+  { label: "Wed", value: 6, display: "6", color: COLORS.gold },
+  { label: "Thu", value: 9, display: "9", color: COLORS.green },
+  { label: "Fri", value: 12, display: "12", color: COLORS.greenDark },
+  { label: "Sat", value: 11, display: "11", color: COLORS.green },
 ];
 
 export const sourceBreakdown = [
@@ -263,23 +256,40 @@ export const sourceBreakdown = [
     value: 6,
     display: "6 leads",
     hint: "Most qualified source",
-    color: "#2b7a4b",
+    color: COLORS.green,
   },
   {
     label: "Direct WhatsApp",
     value: 4,
     display: "4 leads",
     hint: "Strong intent traffic",
-    color: "#d86f31",
+    color: COLORS.orange,
   },
   {
     label: "Fortuner reel",
     value: 2,
     display: "2 leads",
     hint: "Higher browsing intent",
-    color: "#b07b17",
+    color: COLORS.gold,
   },
 ];
+
+export const aiRecommendations = [
+  {
+    title: "Jump into Aman now",
+    text: "Strong close potential. Finance concern is the last blocker and the customer already asked for Rajesh by name.",
+  },
+  {
+    title: "Push 6L-9L SUVs in the next reel",
+    text: "Current demand is clustered in the mid-range family SUV segment.",
+  },
+  {
+    title: "Add a delivery FAQ",
+    text: "Customers asked about delivery and location repeatedly this week.",
+  },
+];
+
+export const topComparisonCars = "Nexon, Brezza";
 
 export const leadStageData = [
   {
@@ -287,27 +297,27 @@ export const leadStageData = [
     value: 100,
     display: "12",
     note: "Top of funnel today",
-    color: "#e5c07b",
+    color: COLORS.yellow,
   },
   {
     label: "Qualified",
     value: 66,
     display: "8",
     note: "Matches found and needs clear",
-    color: "#d86f31",
+    color: COLORS.orange,
   },
   {
     label: "Escalated",
     value: 33,
     display: "4",
     note: "Owner or SDR should step in",
-    color: "#b34e35",
+    color: COLORS.red,
   },
   {
     label: "Visits booked",
     value: 16,
     display: "2",
     note: "Strong buying signal",
-    color: "#2b7a4b",
+    color: COLORS.green,
   },
 ];
