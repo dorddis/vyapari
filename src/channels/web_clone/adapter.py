@@ -1,95 +1,16 @@
-"""Web clone adapter.
-
-Stores outbound/inbound messages in memory so the web frontend can poll
-`GET /api/messages/{wa_id}` instead of calling WhatsApp Cloud API.
-"""
+"""Web clone adapter."""
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from uuid import uuid4
 
 from channels.base import ChannelAdapter
 from models import IncomingMessage, MessageType
+from services.message_log import log_message
 
 
 class WebCloneAdapter(ChannelAdapter):
-    """In-memory channel adapter for local web demo/testing."""
-
-    def __init__(self) -> None:
-        self._messages_by_wa_id: dict[str, list[dict]] = {}
-
-    def _now_iso(self) -> str:
-        return datetime.now(timezone.utc).isoformat()
-
-    def _append_message(
-        self,
-        wa_id: str,
-        role: str,
-        text: str,
-        images: list[str] | None = None,
-        msg_type: str = "text",
-    ) -> str:
-        msg_id = f"web-{uuid4()}"
-        payload = {
-            "id": msg_id,
-            "role": role,
-            "text": text,
-            "timestamp": self._now_iso(),
-            "images": images or [],
-            "is_escalation": False,
-            "escalation_reason": "",
-            "msg_type": msg_type,
-        }
-        self._messages_by_wa_id.setdefault(wa_id, []).append(payload)
-        return msg_id
-
-    # --- Extra helpers used by web_api.py ---
-
-    def record_incoming(self, msg: IncomingMessage) -> str:
-        """Store a user message from the web UI."""
-        return self._append_message(
-            wa_id=msg.wa_id,
-            role="customer",
-            text=msg.text or "",
-            msg_type=msg.msg_type.value,
-        )
-
-    def get_messages(self, wa_id: str, since_id: str | None = None) -> list[dict]:
-        """Get buffered messages for one wa_id."""
-        messages = self._messages_by_wa_id.get(wa_id, [])
-        if not since_id:
-            return list(messages)
-
-        found = False
-        result: list[dict] = []
-        for message in messages:
-            if found:
-                result.append(message)
-            if message["id"] == since_id:
-                found = True
-        return result
-
-    def list_conversations(self) -> list[dict]:
-        """List per-customer summaries for owner web panel."""
-        conversations: list[dict] = []
-        for wa_id, messages in self._messages_by_wa_id.items():
-            if not messages:
-                continue
-            last = messages[-1]
-            customer_name = f"Customer {wa_id[-4:]}" if len(wa_id) >= 4 else "Customer"
-            conversations.append(
-                {
-                    "customer_id": wa_id,
-                    "customer_name": customer_name,
-                    "last_message": last.get("text", ""),
-                    "last_activity": last.get("timestamp", ""),
-                    "mode": "bot",
-                    "has_escalation": False,
-                }
-            )
-        conversations.sort(key=lambda item: item["last_activity"], reverse=True)
-        return conversations
+    """Web adapter that writes outbound messages to DB message log."""
 
     # --- ChannelAdapter implementation ---
 
@@ -113,12 +34,21 @@ class WebCloneAdapter(ChannelAdapter):
             # Keep demo adapter resilient; fallback role is bot.
             role = "bot"
 
-        return self._append_message(wa_id=to, role=role, text=text)
+        return await log_message(
+            wa_id=to,
+            role=role,
+            direction="outbound",
+            channel="web_clone",
+            text=text,
+            msg_type="text",
+        )
 
     async def send_image(self, to: str, image_url: str, caption: str = "") -> str:
-        return self._append_message(
+        return await log_message(
             wa_id=to,
             role="bot",
+            direction="outbound",
+            channel="web_clone",
             text=caption or "Image",
             images=[image_url],
             msg_type="image",
@@ -136,7 +66,15 @@ class WebCloneAdapter(ChannelAdapter):
         titles = ", ".join(button.get("title", "Option") for button in buttons)
         text = body if titles == "" else f"{body}\n\nOptions: {titles}"
         images = [image_url] if image_url else []
-        return self._append_message(wa_id=to, role="bot", text=text, images=images)
+        return await log_message(
+            wa_id=to,
+            role="bot",
+            direction="outbound",
+            channel="web_clone",
+            text=text,
+            images=images,
+            msg_type="interactive_buttons",
+        )
 
     async def send_list(
         self,
@@ -153,7 +91,14 @@ class WebCloneAdapter(ChannelAdapter):
                 rows.append(row.get("title", "Item"))
         items_text = ", ".join(rows[:10])
         text = body if items_text == "" else f"{body}\n\n{button_text}: {items_text}"
-        return self._append_message(wa_id=to, role="bot", text=text)
+        return await log_message(
+            wa_id=to,
+            role="bot",
+            direction="outbound",
+            channel="web_clone",
+            text=text,
+            msg_type="interactive_list",
+        )
 
     async def send_location(
         self,
@@ -167,12 +112,21 @@ class WebCloneAdapter(ChannelAdapter):
         text = f"{label}: {latitude}, {longitude}"
         if address:
             text = f"{text}\n{address}"
-        return self._append_message(wa_id=to, role="bot", text=text, msg_type="location")
-
-    async def send_contact(self, to: str, name: str, phone: str) -> str:
-        return self._append_message(
+        return await log_message(
             wa_id=to,
             role="bot",
+            direction="outbound",
+            channel="web_clone",
+            text=text,
+            msg_type="location",
+        )
+
+    async def send_contact(self, to: str, name: str, phone: str) -> str:
+        return await log_message(
+            wa_id=to,
+            role="bot",
+            direction="outbound",
+            channel="web_clone",
             text=f"Contact: {name} ({phone})",
             msg_type="contact",
         )
@@ -190,7 +144,15 @@ class WebCloneAdapter(ChannelAdapter):
         if params_text:
             text = f"{text}: {params_text}"
         images = [image_url] if image_url else []
-        return self._append_message(wa_id=to, role="bot", text=text, images=images)
+        return await log_message(
+            wa_id=to,
+            role="bot",
+            direction="outbound",
+            channel="web_clone",
+            text=text,
+            images=images,
+            msg_type="template",
+        )
 
     async def send_typing(self, to: str) -> None:
         return None

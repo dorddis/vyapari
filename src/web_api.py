@@ -1,7 +1,7 @@
 """REST API endpoints for web clone frontend.
 
 This API uses router.dispatch with normalized IncomingMessage payloads.
-Outgoing messages are buffered by WebCloneAdapter and fetched via polling.
+Messages are persisted in DB and fetched via polling.
 """
 
 from __future__ import annotations
@@ -17,6 +17,10 @@ from channels.base import get_channel
 from channels.web_clone.adapter import WebCloneAdapter
 from models import ConversationState, IncomingMessage, MessageType
 from router import dispatch
+from services.message_log import (
+    fetch_messages_for_wa_id,
+    list_conversations_from_logs,
+)
 from services.relay import open_relay
 
 router = APIRouter(prefix="/api")
@@ -80,7 +84,6 @@ async def customer_chat(req: ChatRequest) -> dict[str, object]:
         msg_type=MessageType.TEXT,
         sender_name=req.customer_name,
     )
-    channel.record_incoming(incoming)
 
     reply = await dispatch(incoming)
     if reply:
@@ -100,9 +103,9 @@ async def get_conversation_messages(
     since_id: str | None = None,
 ) -> dict[str, object]:
     """Poll buffered web messages for one wa_id."""
-    channel = _require_web_clone()
+    _require_web_clone()
     mode = await state.get_conversation_state(wa_id)
-    messages = channel.get_messages(wa_id, since_id=since_id)
+    messages = await fetch_messages_for_wa_id(wa_id, since_id=since_id)
     return {
         "customer_id": wa_id,
         "mode": _to_ui_mode(mode),
@@ -113,8 +116,8 @@ async def get_conversation_messages(
 @router.get("/conversations")
 async def get_conversations() -> dict[str, object]:
     """Conversation list for owner panel."""
-    channel = _require_web_clone()
-    conversations = channel.list_conversations()
+    _require_web_clone()
+    conversations = await list_conversations_from_logs()
     for conversation in conversations:
         conv_state = await state.get_conversation_state(conversation["customer_id"])
         conversation["mode"] = _to_ui_mode(conv_state)

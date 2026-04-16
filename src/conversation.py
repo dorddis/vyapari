@@ -108,6 +108,17 @@ def get_reply_rich(customer_id: str, message: str) -> dict:
 
     Returns: {"text": str, "images": [str], "is_escalation": bool, "escalation_reason": str}
     """
+    if not GEMINI_API_KEY:
+        return {
+            "text": (
+                "Message received. Agent replies are not configured yet. "
+                "Set OPENAI_API_KEY or GEMINI_API_KEY to enable live responses."
+            ),
+            "images": [],
+            "is_escalation": False,
+            "escalation_reason": "",
+        }
+
     if customer_id not in _conversations:
         _conversations[customer_id] = []
 

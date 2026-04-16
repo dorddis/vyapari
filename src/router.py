@@ -32,6 +32,7 @@ from models import (
     RoutingDecision,
     StaffRole,
 )
+from services.message_log import log_incoming_message
 
 log = logging.getLogger("vyapari.router")
 
@@ -248,6 +249,7 @@ async def dispatch(msg: IncomingMessage) -> str | None:
         log.info(f"Duplicate message {msg.msg_id}, skipping")
         return None
     await state.mark_message_processed(msg.msg_id)
+    await log_incoming_message(msg, channel=config.CHANNEL_MODE)
 
     # Ensure customer/conversation records exist
     customer = await state.get_or_create_customer(

@@ -85,6 +85,9 @@ async def get_db():
 
 async def init_db() -> None:
     """Create all tables. Call once on startup."""
+    # Ensure ORM models are imported before metadata.create_all().
+    import db_models  # noqa: F401
+
     engine = get_engine()
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)

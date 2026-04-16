@@ -6,6 +6,7 @@ from uuid import uuid4
 
 from channels.base import ChannelAdapter
 from models import IncomingMessage, MessageType
+from services.message_log import log_message
 from whatsapp import (
     extract_message as legacy_extract_message,
     mark_read as legacy_mark_read,
@@ -27,11 +28,62 @@ class WhatsAppAdapter(ChannelAdapter):
 
     async def send_text(self, to: str, text: str) -> str:
         response = await legacy_send_text(to, text)
-        return _extract_response_msg_id(response)
+        external_msg_id = _extract_response_msg_id(response)
+        role = "bot"
+        try:
+            import state
+            from models import StaffRole
+
+            relay = await state.get_active_relay_for_customer(to)
+            if relay:
+                staff = await state.get_staff(relay.staff_wa_id)
+                if staff and staff.role == StaffRole.OWNER:
+                    role = "owner"
+                elif staff and staff.role == StaffRole.SDR:
+                    role = "sdr"
+        except Exception:
+            role = "bot"
+
+        await log_message(
+            wa_id=to,
+            role=role,
+            direction="outbound",
+            channel="whatsapp",
+            text=text,
+            msg_type="text",
+            external_msg_id=external_msg_id,
+        )
+        return external_msg_id
 
     async def send_image(self, to: str, image_url: str, caption: str = "") -> str:
         response = await legacy_send_image(to, image_url, caption)
-        return _extract_response_msg_id(response)
+        external_msg_id = _extract_response_msg_id(response)
+        role = "bot"
+        try:
+            import state
+            from models import StaffRole
+
+            relay = await state.get_active_relay_for_customer(to)
+            if relay:
+                staff = await state.get_staff(relay.staff_wa_id)
+                if staff and staff.role == StaffRole.OWNER:
+                    role = "owner"
+                elif staff and staff.role == StaffRole.SDR:
+                    role = "sdr"
+        except Exception:
+            role = "bot"
+
+        await log_message(
+            wa_id=to,
+            role=role,
+            direction="outbound",
+            channel="whatsapp",
+            text=caption or "Image",
+            msg_type="image",
+            external_msg_id=external_msg_id,
+            images=[image_url],
+        )
+        return external_msg_id
 
     async def send_buttons(
         self,

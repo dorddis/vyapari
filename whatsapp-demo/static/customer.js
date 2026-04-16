@@ -79,8 +79,8 @@
       messagesEl.innerHTML = "";
 
       if (!Array.isArray(data.messages) || data.messages.length === 0) {
-        appendSystemMessage("Demo mode: UI-only shell for WhatsApp chat. Connect GPT agent to /api/chat.");
-        appendBubble("bot", "Namaste! Ask about cars, pricing, or test drive to test the flow.");
+        appendSystemMessage("Connected to the live demo backend.");
+        appendBubble("bot", "Namaste! Ask about cars, pricing, or a test drive.");
         return;
       }
 
@@ -124,7 +124,7 @@
 
       const data = await response.json();
       removeTyping();
-      appendBubble("bot", data.reply || "No reply from demo endpoint.", data.timestamp);
+      appendBubble("bot", data.reply || "No reply from backend.", new Date().toISOString());
     } catch (error) {
       removeTyping();
       appendSystemMessage("Send failed. Check backend and try again.");
