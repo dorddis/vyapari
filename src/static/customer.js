@@ -266,8 +266,10 @@
       scrollDown();
     }, 600);
 
-    // Start polling
-    setInterval(pollMessages, 2000);
+    // Sync lastMessageId before polling so old history doesn't render
+    syncLastMessageId().then(function () {
+      setInterval(pollMessages, 2000);
+    });
     inputEl.focus();
   }
 
@@ -328,7 +330,19 @@
     inputEl.focus();
   }
 
-  // --- Poll for owner messages ---
+  // --- Sync message cursor so old history doesn't render ---
+
+  async function syncLastMessageId() {
+    try {
+      var resp = await fetch("/api/messages/" + CUSTOMER_ID, { headers: getApiHeaders(false) });
+      var data = await resp.json();
+      if (data.messages && data.messages.length > 0) {
+        lastMessageId = data.messages[data.messages.length - 1].id;
+      }
+    } catch (err) { /* silent */ }
+  }
+
+  // --- Poll for new messages (relay, bot replies from other channels) ---
 
   async function pollMessages() {
     try {
@@ -338,7 +352,8 @@
 
       if (data.messages && data.messages.length > 0) {
         data.messages.forEach(function (msg) {
-          if (msg.role !== "customer") {
+          // Show non-customer messages that have actual content
+          if (msg.role !== "customer" && msg.text && msg.text.trim()) {
             messagesEl.appendChild(createBubble("bot", msg.text, msg.timestamp, msg.images || [], msg.is_escalation || false));
             scrollDown();
           }
