@@ -28,7 +28,7 @@ from vyapari_agents.tools.catalogue import (
     tool_search_catalogue,
 )
 from vyapari_agents.tools.business import tool_get_business_info, tool_get_faq_answer
-from services.escalation import detect_escalation
+from services.escalation import detect_escalation, trigger_escalation
 
 log = logging.getLogger("vyapari.agents.customer")
 
@@ -202,8 +202,7 @@ async def run_customer_agent(wa_id: str, message: str) -> str:
     # Post-run escalation detection
     should_escalate, reason = detect_escalation(message, reply)
     if should_escalate and conversation.state.value != "escalated":
-        from models import ConversationState
-        await state.set_conversation_state(wa_id, ConversationState.ESCALATED, reason)
+        await trigger_escalation(wa_id, reason, summary=reply[:240])
         log.info(f"Escalation detected for {wa_id}: {reason}")
 
     # Update interested cars from context (tools may have mutated it)

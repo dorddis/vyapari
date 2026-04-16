@@ -3,7 +3,8 @@
 import json
 
 import state
-from models import ConversationState, MessageRole
+from models import MessageRole
+from services.escalation import trigger_escalation
 
 
 async def tool_request_escalation(customer_wa_id: str, reason: str, summary: str = "") -> str:
@@ -27,20 +28,24 @@ async def tool_request_escalation(customer_wa_id: str, reason: str, summary: str
     This tool is terminal for the current action flow:
     - yes
     """
-    conv = await state.get_conversation(customer_wa_id)
-    if not conv:
-        return json.dumps({"success": False, "data": None, "message": "No conversation found."})
-
-    await state.set_conversation_state(customer_wa_id, ConversationState.ESCALATED, reason)
-    await state.add_escalation(conv.id, trigger=reason, summary=summary)
-
     customer = await state.get_customer(customer_wa_id)
     name = customer.name if customer else "Customer"
+    success, message, target_staff_wa_id = await trigger_escalation(
+        customer_wa_id,
+        reason,
+        summary,
+    )
+    if not success:
+        return json.dumps({"success": False, "data": None, "message": message})
 
     return json.dumps({
         "success": True,
-        "data": {"customer": name, "reason": reason},
-        "message": f"Escalated: {name} - {reason}. Staff notified.",
+        "data": {
+            "customer": name,
+            "reason": reason,
+            "notified_staff_wa_id": target_staff_wa_id,
+        },
+        "message": f"Escalated: {name} - {reason}. Staff notification queued.",
     })
 
 

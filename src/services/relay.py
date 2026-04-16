@@ -71,10 +71,16 @@ async def close_relay(
 
     customer = await state.get_customer(session.customer_wa_id)
     name = customer.name if customer else "Customer"
+    queued = await get_queued_escalations(staff_wa_id)
 
     if reason == "timeout":
-        return True, f"Session with {name} auto-closed (idle timeout). Agent resumed."
-    return True, f"Session with {name} closed. Agent resumed."
+        base_message = f"Session with {name} auto-closed (idle timeout). Agent resumed."
+    else:
+        base_message = f"Session with {name} closed. Agent resumed."
+
+    if queued:
+        return True, f"{base_message}\n\n{queued}"
+    return True, base_message
 
 
 async def get_queued_escalations(staff_wa_id: str) -> str:
@@ -84,7 +90,16 @@ async def get_queued_escalations(staff_wa_id: str) -> str:
     """
     # For now, return empty — escalation queuing will be built with the agents
     # TODO: track escalations during relay and show them here
-    return ""
+    notifications = await state.pop_staff_escalation_notifications(staff_wa_id)
+    if not notifications:
+        return ""
+
+    lines = ["WHILE YOU WERE CHATTING:"]
+    for notification in notifications:
+        lines.append(
+            f"- {notification.customer_name} ({notification.lead_status}) - {notification.summary}"
+        )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

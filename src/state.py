@@ -22,6 +22,7 @@ from models import (
     PendingOwnerActionRecord,
     RelaySessionRecord,
     RelaySessionStatus,
+    StaffEscalationNotificationRecord,
     StaffRecord,
     StaffRole,
     StaffStatus,
@@ -36,6 +37,7 @@ _conversations: dict[str, ConversationRecord] = {}  # keyed by customer_wa_id
 _messages: dict[str, list[MessageRecord]] = {}  # keyed by conversation_id
 _relay_sessions: dict[str, RelaySessionRecord] = {}  # keyed by staff_wa_id
 _escalations: dict[str, list[EscalationRecord]] = {}  # keyed by conversation_id
+_staff_escalation_notifications: dict[str, list[StaffEscalationNotificationRecord]] = {}
 _pending_owner_actions: dict[str, PendingOwnerActionRecord] = {}  # keyed by staff_wa_id
 _processed_msg_ids: set[str] = set()  # for webhook idempotency
 
@@ -392,6 +394,48 @@ async def add_escalation(
     return esc
 
 
+async def get_escalations(conversation_id: str) -> list[EscalationRecord]:
+    return list(_escalations.get(conversation_id, []))
+
+
+async def queue_staff_escalation_notification(
+    staff_wa_id: str,
+    escalation_id: str,
+    conversation_id: str,
+    customer_wa_id: str,
+    customer_name: str,
+    lead_status: str,
+    trigger: str,
+    summary: str,
+) -> StaffEscalationNotificationRecord:
+    notification = StaffEscalationNotificationRecord(
+        id=str(uuid4()),
+        staff_wa_id=staff_wa_id,
+        escalation_id=escalation_id,
+        conversation_id=conversation_id,
+        customer_wa_id=customer_wa_id,
+        customer_name=customer_name,
+        lead_status=lead_status,
+        trigger=trigger,
+        summary=summary,
+        created_at=_now(),
+    )
+    _staff_escalation_notifications.setdefault(staff_wa_id, []).append(notification)
+    return notification
+
+
+async def get_staff_escalation_notifications(
+    staff_wa_id: str,
+) -> list[StaffEscalationNotificationRecord]:
+    return list(_staff_escalation_notifications.get(staff_wa_id, []))
+
+
+async def pop_staff_escalation_notifications(
+    staff_wa_id: str,
+) -> list[StaffEscalationNotificationRecord]:
+    return _staff_escalation_notifications.pop(staff_wa_id, [])
+
+
 # ---------------------------------------------------------------------------
 # Pending owner actions
 # ---------------------------------------------------------------------------
@@ -445,6 +489,7 @@ async def reset_state() -> None:
     _messages.clear()
     _relay_sessions.clear()
     _escalations.clear()
+    _staff_escalation_notifications.clear()
     _pending_owner_actions.clear()
     _processed_msg_ids.clear()
     _locks.clear()

@@ -618,8 +618,8 @@ During RELAY_ACTIVE, no agent runs at all. The message router bypasses both agen
 ### OpenAI API + Agents SDK
 - **OpenAI Agents SDK** (`pip install openai-agents`): Agent orchestration framework. Two agent instances (Customer Agent, Owner Agent) with separate tool sets and per-user sessions. `@function_tool` for tool definitions, `Runner.run()` for execution, `PostgresSession` for conversation persistence.
 - **GPT-5:** Main agent conversations + multimodal parsing (PDF/image --> catalogue)
-- **GPT-4.1 nano:** Lightweight classification (escalation detection fallback when phrase matching is ambiguous, command-vs-relay safety check)
-- **Whisper:** Voice note STT (stretch goal)
+- **GPT-5 mini:** Lightweight classification (escalation detection fallback when phrase matching is ambiguous, command-vs-relay safety check)
+- **GPT-4o mini Transcribe:** Voice note STT (stretch goal)
 - **TTS:** Voice note responses (stretch goal)
 - **Function calling:** All tool invocations go through the Agents SDK's tool_calls mechanism. Agent decides which tool, we execute and return results.
 
@@ -837,7 +837,7 @@ OUR FASTAPI SERVER
 | PostgreSQL over WA Catalogue as source of truth | Full control, query flexibility, no Meta API dependency | "Zero external DB" simplicity | Meta Commerce API has compliance overhead in India. Sync as display layer instead. |
 | Agent-as-relay over Coexistence mode | Agent provides context before every session, full logging, any-device support, agent adds value during relay | Direct WhatsApp chat UX (zero latency, native feel) | The relay IS the product. Context summaries + smart routing are the differentiator. Coexistence is fallback for production. |
 | `/` prefix for agent commands during relay | Simple, universal convention, zero ambiguity | Fully friction-free "just type" (owner must remember prefix for commands) | Only 3-4 commands needed mid-session. `/done` is the main one. Everything else is forwarded by default. |
-| Phrase matching over ML for escalation | Simple, fast, no training data needed | Nuanced detection (sarcasm, implied frustration) | 15-20 trigger phrases cover 90%. GPT-4.1 nano as fallback. |
+| Phrase matching over ML for escalation | Simple, fast, no training data needed | Nuanced detection (sarcasm, implied frustration) | 15-20 trigger phrases cover 90%. GPT-5 mini as fallback. |
 | Max 8 tool calls per turn | Safety against infinite loops | Deep multi-step reasoning | Covers search --> details --> compare --> escalate in one turn. |
 | List Messages over Commerce Catalog | Flexible, no Meta approval, dynamic per-query | Native product cards with "Add to Cart" UX | Used cars are one-of-a-kind, prices negotiable, India compliance burdensome for Commerce API. |
 | Sequential images over Carousel Templates | Dynamic per-query, no pre-approval needed | Swipeable card UX | Carousel templates need 24-48hr Meta approval. Can't generate dynamically. |

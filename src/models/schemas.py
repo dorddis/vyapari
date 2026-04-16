@@ -154,6 +154,19 @@ class EscalationRecord(BaseModel):
     resolved_at: datetime | None = None
 
 
+class StaffEscalationNotificationRecord(BaseModel):
+    id: str
+    staff_wa_id: str
+    escalation_id: str
+    conversation_id: str
+    customer_wa_id: str
+    customer_name: str
+    lead_status: str
+    trigger: str
+    summary: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class PendingOwnerActionRecord(BaseModel):
     staff_wa_id: str
     action_name: str

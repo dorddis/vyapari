@@ -20,6 +20,7 @@ from models.schemas import (
     PendingOwnerActionRecord,
     RelaySessionRecord,
     RoutingDecision,
+    StaffEscalationNotificationRecord,
     StaffRecord,
     ToolResponse,
 )
@@ -44,6 +45,7 @@ __all__ = [
     "PendingOwnerActionRecord",
     "RelaySessionRecord",
     "RoutingDecision",
+    "StaffEscalationNotificationRecord",
     "StaffRecord",
     "ToolResponse",
 ]

@@ -1,4 +1,4 @@
-"""Escalation detection — regex first pass + GPT-4.1 nano fallback.
+"""Escalation detection — regex first pass + GPT-5 mini fallback.
 
 Extracted from the prototype's conversation.py (lines 53-97) and extended
 with an LLM classifier for ambiguous cases.
@@ -7,6 +7,8 @@ with an LLM classifier for ambiguous cases.
 import re
 
 import config
+import state
+from models import ConversationState
 
 # ---------------------------------------------------------------------------
 # Regex patterns (from prototype, proven in testing)
@@ -34,6 +36,15 @@ _SENTIMENT_SIGNALS = [
     r"not happy", r"disappointed", r"angry", r"frustrated",
     r"kuch nahi", r"time waste", r"reply nahi",
 ]
+
+
+async def _resolve_owner_staff_wa_id() -> str:
+    """Find the active owner staff record, falling back to config if needed."""
+    staff_members = await state.list_staff()
+    for staff_member in staff_members:
+        if staff_member.role.value == "owner" and staff_member.status.value == "active":
+            return staff_member.wa_id
+    return config.DEFAULT_OWNER_PHONE
 
 
 def detect_escalation(customer_msg: str, bot_reply: str) -> tuple[bool, str]:
@@ -66,10 +77,52 @@ def detect_escalation(customer_msg: str, bot_reply: str) -> tuple[bool, str]:
     return False, ""
 
 
+async def trigger_escalation(
+    customer_wa_id: str,
+    reason: str,
+    summary: str = "",
+) -> tuple[bool, str, str | None]:
+    """Persist an escalation and queue a staff notification."""
+    conversation = await state.get_conversation(customer_wa_id)
+    customer = await state.get_customer(customer_wa_id)
+
+    if not conversation or not customer:
+        return False, "No conversation found.", None
+
+    await state.set_conversation_state(
+        customer_wa_id,
+        ConversationState.ESCALATED,
+        reason,
+    )
+    escalation = await state.add_escalation(
+        conversation.id,
+        trigger=reason,
+        summary=summary,
+    )
+
+    target_staff_wa_id = conversation.assigned_to or await _resolve_owner_staff_wa_id()
+    target_staff = await state.get_staff(target_staff_wa_id)
+    if not target_staff or target_staff.status.value != "active":
+        target_staff_wa_id = await _resolve_owner_staff_wa_id()
+
+    await state.queue_staff_escalation_notification(
+        staff_wa_id=target_staff_wa_id,
+        escalation_id=escalation.id,
+        conversation_id=conversation.id,
+        customer_wa_id=customer.wa_id,
+        customer_name=customer.name,
+        lead_status=customer.lead_status.value,
+        trigger=reason,
+        summary=summary or reason,
+    )
+
+    return True, f"Escalated {customer.name}. Staff notification queued.", target_staff_wa_id
+
+
 def _classify_escalation_llm(
     customer_msg: str, bot_reply: str
 ) -> tuple[bool, str]:
-    """GPT-4.1 nano fallback for ambiguous escalation signals.
+    """GPT-5 mini fallback for ambiguous escalation signals.
 
     Only called when regex doesn't match but sentiment signals are present.
     Synchronous (blocking) because it's a quick classification call.
