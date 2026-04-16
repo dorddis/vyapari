@@ -132,29 +132,18 @@ async def route_message(msg: IncomingMessage) -> RoutingDecision:
 # ---------------------------------------------------------------------------
 
 async def handle_customer_agent(msg: IncomingMessage, conv_state: ConversationState) -> str:
-    """Run Customer Agent via OpenAI Agents SDK (Gemini fallback if no key)."""
-    if not config.USE_OPENAI:
-        try:
-            from conversation import get_reply
-            return get_reply(customer_id=msg.wa_id, message=msg.text or "")
-        except Exception as e:
-            log.error(f"Gemini fallback error: {e}")
-            return "Sorry, I'm having trouble right now. Please try again!"
+    """Run Customer Agent via OpenAI Agents SDK."""
+    if not config.OPENAI_API_KEY:
+        return "OpenAI is not configured yet. Set OPENAI_API_KEY to enable agent replies."
 
     from agents.customer import run_customer_agent
     return await run_customer_agent(msg.wa_id, msg.text or "")
 
 
 async def handle_owner_agent(msg: IncomingMessage, staff_name: str | None) -> str:
-    """Run Owner Agent via OpenAI Agents SDK (Gemini fallback if no key)."""
-    if not config.USE_OPENAI:
-        try:
-            from owner_agent import owner_query
-            result = owner_query(msg.text or "")
-            return result.get("text", "")
-        except Exception as e:
-            log.error(f"Gemini owner fallback error: {e}")
-            return "Sorry, something went wrong."
+    """Run Owner Agent via OpenAI Agents SDK."""
+    if not config.OPENAI_API_KEY:
+        return "OpenAI is not configured yet. Set OPENAI_API_KEY to enable owner replies."
 
     from agents.owner import run_owner_agent
     return await run_owner_agent(msg.wa_id, msg.text or "")
@@ -162,7 +151,7 @@ async def handle_owner_agent(msg: IncomingMessage, staff_name: str | None) -> st
 
 async def handle_sdr_agent(msg: IncomingMessage, staff_name: str | None) -> str:
     """Run SDR Agent (same as owner but with limited tools)."""
-    if not config.USE_OPENAI:
+    if not config.OPENAI_API_KEY:
         return "SDR agent requires OpenAI. Set OPENAI_API_KEY in .env."
 
     from agents.owner import run_owner_agent

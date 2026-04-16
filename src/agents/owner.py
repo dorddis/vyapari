@@ -11,7 +11,7 @@ from agents import Agent, Runner, function_tool, RunContextWrapper, ModelSetting
 import config
 import state
 from agents.context import StaffContext
-from agents.prompts import build_owner_system_prompt, build_sdr_system_prompt
+from agents.app_prompts import build_owner_system_prompt, build_sdr_system_prompt
 from agents.tools.catalogue import (
     tool_add_item,
     tool_check_availability,
@@ -236,7 +236,7 @@ def _sdr_instructions(ctx: RunContextWrapper[StaffContext], agent: Agent) -> str
 
 
 _model_settings = ModelSettings(
-    reasoning={"effort": "low"},  # GPT-5.4 tool calling fix
+    reasoning={"effort": "none"},  # lower latency for dashboard/oracle queries
 )
 
 owner_agent = Agent[StaffContext](

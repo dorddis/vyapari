@@ -20,7 +20,7 @@ from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
 import config
 import state
 from agents.context import CustomerContext
-from agents.prompts import build_customer_system_prompt
+from agents.app_prompts import build_customer_system_prompt
 from agents.tools.catalogue import (
     tool_check_availability,
     tool_compare_items,
@@ -141,7 +141,7 @@ customer_agent = Agent[CustomerContext](
     ],
     model=config.OPENAI_MAIN_MODEL,
     model_settings=ModelSettings(
-        reasoning={"effort": "low"},  # GPT-5.4 tool calling fix
+        reasoning={"effort": "none"},  # lower latency for chat-first demo flows
     ),
 )
 
