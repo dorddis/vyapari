@@ -511,6 +511,7 @@ sdr_agent = Agent[StaffContext](
 async def run_owner_agent(wa_id: str, message: str) -> str:
     """Run the Owner Agent for a single message turn."""
     from models import MessageRole
+    from services.relay import handle_pending_relay_selection
 
     staff = await state.get_staff(wa_id)
     if not staff:
@@ -519,6 +520,10 @@ async def run_owner_agent(wa_id: str, message: str) -> str:
     pending_confirmation_reply = await handle_pending_owner_confirmation(wa_id, message)
     if pending_confirmation_reply is not None:
         return pending_confirmation_reply
+
+    pending_selection_reply = await handle_pending_relay_selection(wa_id, message)
+    if pending_selection_reply is not None:
+        return pending_selection_reply
 
     relay = await state.get_active_relay_for_staff(wa_id)
 

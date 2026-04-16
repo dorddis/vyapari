@@ -21,6 +21,7 @@ from models import (
     MessageRole,
     MessageType,
     PendingOwnerActionRecord,
+    PendingRelaySelectionRecord,
     RelaySessionRecord,
     RelaySessionStatus,
     StaffEscalationNotificationRecord,
@@ -41,6 +42,7 @@ _relay_sessions: dict[str, RelaySessionRecord] = {}  # keyed by staff_wa_id
 _escalations: dict[str, list[EscalationRecord]] = {}  # keyed by conversation_id
 _staff_escalation_notifications: dict[str, list[StaffEscalationNotificationRecord]] = {}
 _pending_owner_actions: dict[str, PendingOwnerActionRecord] = {}  # keyed by staff_wa_id
+_pending_relay_selections: dict[str, PendingRelaySelectionRecord] = {}  # keyed by staff_wa_id
 _processed_msg_ids: set[str] = set()  # for webhook idempotency
 
 # Per-conversation locks to prevent race conditions
@@ -504,6 +506,36 @@ async def clear_pending_owner_action(staff_wa_id: str) -> None:
     _pending_owner_actions.pop(staff_wa_id, None)
 
 
+async def get_pending_relay_selection(
+    staff_wa_id: str,
+) -> PendingRelaySelectionRecord | None:
+    return _pending_relay_selections.get(staff_wa_id)
+
+
+async def set_pending_relay_selection(
+    staff_wa_id: str,
+    mode: str,
+    query: str,
+    options: list[dict],
+    prompt: str,
+    current_customer_wa_id: str | None = None,
+) -> PendingRelaySelectionRecord:
+    record = PendingRelaySelectionRecord(
+        staff_wa_id=staff_wa_id,
+        mode=mode,
+        query=query,
+        options=options,
+        prompt=prompt,
+        current_customer_wa_id=current_customer_wa_id,
+    )
+    _pending_relay_selections[staff_wa_id] = record
+    return record
+
+
+async def clear_pending_relay_selection(staff_wa_id: str) -> None:
+    _pending_relay_selections.pop(staff_wa_id, None)
+
+
 # ---------------------------------------------------------------------------
 # Initialization
 # ---------------------------------------------------------------------------
@@ -530,5 +562,6 @@ async def reset_state() -> None:
     _escalations.clear()
     _staff_escalation_notifications.clear()
     _pending_owner_actions.clear()
+    _pending_relay_selections.clear()
     _processed_msg_ids.clear()
     _locks.clear()

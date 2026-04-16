@@ -178,6 +178,16 @@ class InternalNoteRecord(BaseModel):
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
+class PendingRelaySelectionRecord(BaseModel):
+    staff_wa_id: str
+    mode: str
+    query: str
+    options: list[dict[str, Any]] = Field(default_factory=list)
+    prompt: str
+    current_customer_wa_id: str | None = None
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class PendingOwnerActionRecord(BaseModel):
     staff_wa_id: str
     action_name: str

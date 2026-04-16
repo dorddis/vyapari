@@ -3,9 +3,11 @@
 import pytest
 
 import state
-from models import LeadStatus, MessageRole
-from router import handle_relay_command
+from models import LeadStatus, MessageRole, RoutingAction
+from router import handle_relay_command, route_message
 from tests.conftest import make_staff_msg, seed_customer, seed_owner
+from vyapari_agents.owner import run_owner_agent
+from vyapari_agents.tools.relay import tool_open_session
 
 
 @pytest.mark.asyncio
@@ -129,3 +131,70 @@ async def test_relay_wrap_saves_compact_session_snapshot():
     assert notes[-1].note_type == "wrap"
     assert "CONVERSATION SUMMARY" in notes[-1].content
     assert "Strong buyer, follow up tonight" in notes[-1].content
+
+
+@pytest.mark.asyncio
+async def test_owner_number_reply_resolves_pending_open_session_without_llm(monkeypatch):
+    await seed_owner()
+    await seed_customer(wa_id="919876543210", name="Ramesh Patil")
+    await seed_customer(wa_id="919876543211", name="Ramesh Sharma")
+
+    response = await tool_open_session("919999888777", "Ramesh")
+    pending = await state.get_pending_relay_selection("919999888777")
+
+    async def should_not_run(*args, **kwargs):
+        raise AssertionError("LLM runner should not be called while resolving relay selection")
+
+    monkeypatch.setattr("vyapari_agents.owner.Runner.run", should_not_run)
+
+    reply = await run_owner_agent("919999888777", "2")
+    active = await state.get_active_relay_for_staff("919999888777")
+    selected_name = pending.options[1]["name"]
+    selected_wa_id = pending.options[1]["wa_id"]
+
+    assert "Reply with the number to connect" in response
+    assert pending is not None
+    assert f"Session with {selected_name} started" in reply
+    assert active is not None
+    assert active.customer_wa_id == selected_wa_id
+
+
+@pytest.mark.asyncio
+async def test_pending_switch_selection_routes_number_as_relay_command():
+    await seed_owner()
+    await seed_customer(wa_id="919876543210", name="Ramesh Patil")
+    await seed_customer(wa_id="919876543211", name="Priya Shah")
+    await seed_customer(wa_id="919876543212", name="Priyansh Mehta")
+    await state.create_relay_session("919999888777", "919876543210")
+
+    switch_msg = make_staff_msg(wa_id="919999888777", text="/switch Pri")
+    await handle_relay_command(switch_msg, "919876543210")
+
+    numeric_msg = make_staff_msg(wa_id="919999888777", text="1")
+    decision = await route_message(numeric_msg)
+
+    assert decision.action == RoutingAction.RELAY_COMMAND
+
+
+@pytest.mark.asyncio
+async def test_pending_switch_selection_number_opens_selected_customer():
+    await seed_owner()
+    await seed_customer(wa_id="919876543210", name="Ramesh Patil")
+    await seed_customer(wa_id="919876543211", name="Priya Shah")
+    await seed_customer(wa_id="919876543212", name="Priyansh Mehta")
+    await state.create_relay_session("919999888777", "919876543210")
+
+    switch_msg = make_staff_msg(wa_id="919999888777", text="/switch Pri")
+    await handle_relay_command(switch_msg, "919876543210")
+    pending = await state.get_pending_relay_selection("919999888777")
+
+    select_msg = make_staff_msg(wa_id="919999888777", text="2")
+    reply = await handle_relay_command(select_msg, "919876543210")
+    active = await state.get_active_relay_for_staff("919999888777")
+    selected_name = pending.options[1]["name"]
+    selected_wa_id = pending.options[1]["wa_id"]
+
+    assert "Session with Ramesh Patil closed" in reply
+    assert f"Session with {selected_name} started" in reply
+    assert active is not None
+    assert active.customer_wa_id == selected_wa_id

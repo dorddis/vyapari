@@ -14,6 +14,8 @@ from models import (
     RelaySessionRecord,
 )
 
+CANCEL_SELECTION_WORDS = {"cancel", "no", "stop", "nahi", "nahin"}
+
 
 # ---------------------------------------------------------------------------
 # Session lifecycle
@@ -160,13 +162,14 @@ async def switch_relay_session(staff_wa_id: str, query: str) -> str:
         return f"No customers found matching '{query}'. Current session with {current_customer.name} is still active."
 
     if len(matches) > 1:
-        lines = [f"Multiple matches for '{query}'. Current session with {current_customer.name} is still active.", ""]
-        for idx, customer in enumerate(matches, start=1):
-            cars = ", ".join(customer.interested_cars) if customer.interested_cars else "browsing"
-            lines.append(
-                f"{idx}. {customer.name} - {cars} ({customer.lead_status.value.upper()})"
-            )
-        return "\n".join(lines)
+        return await stage_relay_selection(
+            staff_wa_id=staff_wa_id,
+            mode="switch",
+            query=query,
+            customers=matches,
+            heading=f"Multiple matches for '{query}'. Current session with {current_customer.name} is still active.",
+            current_customer_wa_id=current_customer.wa_id,
+        )
 
     next_customer = matches[0]
     closed, close_message = await close_relay(staff_wa_id)
@@ -178,6 +181,83 @@ async def switch_relay_session(staff_wa_id: str, query: str) -> str:
         return open_message
 
     return f"{close_message}\n\n{open_message}"
+
+
+async def stage_relay_selection(
+    staff_wa_id: str,
+    mode: str,
+    query: str,
+    customers: list,
+    heading: str,
+    current_customer_wa_id: str | None = None,
+) -> str:
+    """Persist a numbered relay shortlist and return the prompt shown to staff."""
+    options = []
+    lines = [heading, ""]
+
+    for idx, customer in enumerate(customers, start=1):
+        conversation = await state.get_conversation(customer.wa_id)
+        interested = ", ".join(customer.interested_cars) if customer.interested_cars else "browsing"
+        option = {
+            "number": idx,
+            "wa_id": customer.wa_id,
+            "name": customer.name,
+            "status": customer.lead_status.value,
+            "interested_cars": customer.interested_cars,
+            "conversation_state": conversation.state.value if conversation else "none",
+        }
+        options.append(option)
+        lines.append(f"{idx}. {customer.name} - {interested} ({customer.lead_status.value.upper()})")
+
+    lines.append("")
+    lines.append("Reply with the number to connect, or type cancel.")
+    prompt = "\n".join(lines)
+
+    await state.set_pending_relay_selection(
+        staff_wa_id=staff_wa_id,
+        mode=mode,
+        query=query,
+        options=options,
+        prompt=prompt,
+        current_customer_wa_id=current_customer_wa_id,
+    )
+    return prompt
+
+
+async def handle_pending_relay_selection(staff_wa_id: str, message: str) -> str | None:
+    """Resolve a pending numbered relay selection without another LLM turn."""
+    pending = await state.get_pending_relay_selection(staff_wa_id)
+    if not pending:
+        return None
+
+    normalized = (message or "").strip().lower()
+    if normalized in CANCEL_SELECTION_WORDS:
+        await state.clear_pending_relay_selection(staff_wa_id)
+        return "Cancelled relay selection."
+
+    if normalized.isdigit():
+        index = int(normalized) - 1
+        if 0 <= index < len(pending.options):
+            selected = pending.options[index]
+            await state.clear_pending_relay_selection(staff_wa_id)
+
+            if pending.mode == "switch" and pending.current_customer_wa_id:
+                closed, close_message = await close_relay(staff_wa_id)
+                if not closed:
+                    return close_message
+                session, open_message = await open_relay(staff_wa_id, selected["wa_id"])
+                if not session:
+                    return open_message
+                return f"{close_message}\n\n{open_message}"
+
+            session, open_message = await open_relay(staff_wa_id, selected["wa_id"])
+            if session:
+                return open_message
+            return open_message
+
+        return pending.prompt
+
+    return pending.prompt
 
 
 async def save_relay_note(staff_wa_id: str, note_text: str) -> str:

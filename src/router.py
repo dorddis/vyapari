@@ -77,8 +77,9 @@ async def route_message(msg: IncomingMessage) -> RoutingDecision:
     # --- Staff (owner or SDR) ---
     if role in ("owner", "sdr"):
         relay = await state.get_active_relay_for_staff(msg.wa_id)
+        pending_selection = await state.get_pending_relay_selection(msg.wa_id)
         if relay:
-            if text.startswith(prefix):
+            if text.startswith(prefix) or pending_selection is not None:
                 return RoutingDecision(
                     role=role,
                     action=RoutingAction.RELAY_COMMAND,
@@ -203,6 +204,7 @@ async def handle_relay_command(msg: IncomingMessage, target_wa_id: str) -> str:
     from services.relay import (
         get_relay_customer_number,
         get_relay_status,
+        handle_pending_relay_selection,
         get_session_context,
         save_relay_note,
         save_relay_wrap,
@@ -213,6 +215,10 @@ async def handle_relay_command(msg: IncomingMessage, target_wa_id: str) -> str:
     cmd = text.split()[0].lower() if text else ""
     args = text.split(maxsplit=1)
     arg_text = args[1].strip() if len(args) > 1 else ""
+
+    pending_selection_reply = await handle_pending_relay_selection(msg.wa_id, text)
+    if pending_selection_reply is not None:
+        return pending_selection_reply
 
     if cmd == f"{config.COMMAND_PREFIX}done":
         session = await state.close_relay_session(msg.wa_id)

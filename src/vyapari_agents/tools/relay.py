@@ -1,9 +1,9 @@
-"""Relay tools — open session, get customer number."""
+"""Relay tools - open session, get customer number."""
 
 import json
 
 import state
-from services.relay import open_relay
+from services.relay import open_relay, stage_relay_selection
 
 
 async def tool_open_session(staff_wa_id: str, query: str) -> str:
@@ -30,7 +30,6 @@ async def tool_open_session(staff_wa_id: str, query: str) -> str:
     This tool is terminal for the current action flow:
     - yes
     """
-    # Search for matching customers
     customers = await state.list_customers(search_query=query, limit=10)
 
     if not customers:
@@ -41,7 +40,6 @@ async def tool_open_session(staff_wa_id: str, query: str) -> str:
         })
 
     if len(customers) == 1:
-        # Direct match — open session
         customer = customers[0]
         session, context_msg = await open_relay(staff_wa_id, customer.wa_id)
         if session:
@@ -52,32 +50,30 @@ async def tool_open_session(staff_wa_id: str, query: str) -> str:
             })
         return json.dumps({"success": False, "data": None, "message": context_msg})
 
-    # Multiple matches — show list
     leads = []
-    for i, c in enumerate(customers, 1):
-        conv = await state.get_conversation(c.wa_id)
+    for index, customer in enumerate(customers, start=1):
+        conversation = await state.get_conversation(customer.wa_id)
         leads.append({
-            "number": i,
-            "name": c.name,
-            "wa_id": c.wa_id,
-            "status": c.lead_status.value,
-            "interested_cars": c.interested_cars,
-            "conversation_state": conv.state.value if conv else "none",
+            "number": index,
+            "name": customer.name,
+            "wa_id": customer.wa_id,
+            "status": customer.lead_status.value,
+            "interested_cars": customer.interested_cars,
+            "conversation_state": conversation.state.value if conversation else "none",
         })
 
-    lines = [f"Active conversations matching '{query}':\n"]
-    for lead in leads:
-        cars = ", ".join(lead["interested_cars"]) if lead["interested_cars"] else "browsing"
-        lines.append(
-            f"  {lead['number']}. {lead['name']} -- {cars}\n"
-            f"     Status: {lead['status'].upper()}"
-        )
-    lines.append("\nReply with the number to connect.")
+    prompt = await stage_relay_selection(
+        staff_wa_id=staff_wa_id,
+        mode="open",
+        query=query,
+        customers=customers,
+        heading=f"Active conversations matching '{query}':",
+    )
 
     return json.dumps({
         "success": True,
         "data": leads,
-        "message": "\n".join(lines),
+        "message": prompt,
     })
 
 
