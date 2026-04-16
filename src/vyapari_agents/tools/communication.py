@@ -109,27 +109,18 @@ async def tool_broadcast_message(message_text: str, filter_status: str = "all") 
     This tool is terminal for the current action flow:
     - yes
 
-    For now, returns the list of who would receive it.
-    Actual sending happens through the channel adapter.
+    Sends through the active channel adapter and logs the outbound message
+    into each customer's conversation history.
     """
-    from models import LeadStatus
+    from services.outbound import execute_broadcast_message
 
-    status_filter = None
-    if filter_status != "all":
-        mapping = {
-            "hot": [LeadStatus.HOT],
-            "warm": [LeadStatus.WARM, LeadStatus.HOT],
-            "recent": [LeadStatus.NEW, LeadStatus.WARM, LeadStatus.HOT],
-        }
-        status_filter = mapping.get(filter_status)
-
-    customers = await state.list_customers(status_filter=status_filter)
-
-    # TODO: actually send via channel adapter (with 24hr window template fallback)
-    recipients = [{"name": c.name, "wa_id": c.wa_id, "status": c.lead_status.value} for c in customers]
+    result = await execute_broadcast_message(message_text, filter_status)
 
     return json.dumps({
         "success": True,
-        "data": {"recipients": recipients, "message": message_text},
-        "message": f"Broadcast queued for {len(recipients)} customer{'s' if len(recipients) != 1 else ''}.",
+        "data": {
+            "recipients": result["recipients"],
+            "message": result["message_text"],
+        },
+        "message": f"Broadcast sent to {result['recipient_count']} customer(s).",
     })

@@ -1,13 +1,14 @@
 """OTP authentication tests — 8 scenarios."""
 
 import pytest
+import pytest_asyncio
 
 import state
 from models import StaffRole, StaffStatus
 from services.auth import create_invite, handle_login_message, reset_auth_state, verify_login
 
 
-@pytest.fixture(autouse=True)
+@pytest_asyncio.fixture(autouse=True)
 async def _clean_auth():
     await reset_auth_state()
     yield

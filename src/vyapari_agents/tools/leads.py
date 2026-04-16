@@ -198,43 +198,19 @@ async def tool_batch_followup(
     - confirm how many follow-ups are ready or queued
     - stop the current action flow unless the owner asks for another outbound action
 
-    Loads each customer's conversation history, generates a personalized
-    follow-up, and sends it. Uses template if outside 24hr window.
-
-    For now: returns what WOULD be sent. Actual LLM generation + sending
-    will be wired when the agents are running.
+    Loads each customer's conversation history, generates a lightweight
+    personalized follow-up, sends it through the active channel adapter,
+    and logs the outbound message into conversation history.
 
     This tool is terminal for the current action flow:
     - yes
     """
-    statuses = [LeadStatus(s.strip()) for s in status_filter.split(",") if s.strip() in LeadStatus.__members__]
-    if not statuses:
-        statuses = [LeadStatus.WARM, LeadStatus.HOT]
+    from services.outbound import execute_batch_followup
 
-    customers = await state.list_customers(status_filter=statuses, limit=50)
-
-    followups = []
-    for c in customers:
-        conv = await state.get_conversation(c.wa_id)
-        msgs = await state.get_messages(conv.id) if conv else []
-        last_customer_msg = ""
-        for msg in reversed(msgs):
-            if msg.role == MessageRole.CUSTOMER:
-                last_customer_msg = msg.content[:80]
-                break
-
-        followups.append({
-            "name": c.name,
-            "wa_id": c.wa_id,
-            "status": c.lead_status.value,
-            "interested_cars": c.interested_cars,
-            "last_message": last_customer_msg,
-            # TODO: generate personalized message via LLM (asyncio.gather)
-            "suggested_followup": f"Hi {c.name}, still thinking about the {c.interested_cars[0] if c.interested_cars else 'car'}?",
-        })
+    result = await execute_batch_followup(date, status_filter)
 
     return json.dumps({
         "success": True,
-        "data": followups,
-        "message": f"{len(followups)} follow-ups ready to send.",
+        "data": result["followups"],
+        "message": f"Sent {result['followup_count']} follow-up(s).",
     })

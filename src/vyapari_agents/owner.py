@@ -169,9 +169,15 @@ async def request_owner_confirmation(
 
 async def _execute_pending_owner_action(action_name: str, payload: dict) -> str:
     if action_name == "mark_sold":
-        return _parse_tool_message(tool_mark_sold(payload["item_id"]))
+        from services.catalogue_actions import execute_mark_sold
+
+        result = await execute_mark_sold(payload["item_id"])
+        return result["message"]
     if action_name == "mark_reserved":
-        return _parse_tool_message(tool_mark_reserved(**payload))
+        from services.catalogue_actions import execute_mark_reserved
+
+        result = await execute_mark_reserved(**payload)
+        return result["message"]
     if action_name == "remove_staff":
         from vyapari_agents.tools.staff import tool_remove_staff
         return _parse_tool_message(await tool_remove_staff(payload["identifier"]))

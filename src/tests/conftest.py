@@ -13,6 +13,8 @@ import pytest_asyncio
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import state
+from channels.base import reset_channel
+from channels.web_clone.adapter import reset_outbox
 from models import (
     ConversationState,
     IncomingMessage,
@@ -31,8 +33,12 @@ from models import (
 async def clean_state():
     """Reset all in-memory state before each test."""
     await state.reset_state()
+    reset_channel()
+    reset_outbox()
     yield
     await state.reset_state()
+    reset_channel()
+    reset_outbox()
 
 
 # ---------------------------------------------------------------------------
