@@ -145,7 +145,7 @@ async def handle_customer_agent(msg: IncomingMessage, conv_state: ConversationSt
             return "Sorry, I'm having trouble right now. Please try again!"
 
     from vyapari_agents.customer import run_customer_agent
-    response = await run_customer_agent(msg.wa_id, msg.text or "")
+    response = await run_customer_agent(msg.wa_id, msg.text or "", image_url=msg.media_url)
 
     # Send car images referenced in the reply
     if response.images:
@@ -218,7 +218,7 @@ async def handle_owner_agent(msg: IncomingMessage, staff_name: str | None) -> st
             return "Sorry, something went wrong."
 
     from vyapari_agents.owner import run_owner_agent
-    return await run_owner_agent(msg.wa_id, msg.text or "")
+    return await run_owner_agent(msg.wa_id, msg.text or "", image_url=msg.media_url)
 
 
 async def handle_sdr_agent(msg: IncomingMessage, staff_name: str | None) -> str:
@@ -227,7 +227,7 @@ async def handle_sdr_agent(msg: IncomingMessage, staff_name: str | None) -> str:
         return "SDR agent requires OpenAI. Set OPENAI_API_KEY in .env."
 
     from vyapari_agents.owner import run_owner_agent
-    return await run_owner_agent(msg.wa_id, msg.text or "")
+    return await run_owner_agent(msg.wa_id, msg.text or "", image_url=msg.media_url)
 
 
 async def handle_relay_forward(msg: IncomingMessage, target_wa_id: str) -> str | None:

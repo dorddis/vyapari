@@ -223,6 +223,22 @@ async def batch_followup(date: str = "yesterday", status_filter: str = "warm,hot
     return await tool_batch_followup(date, status_filter)
 
 
+@function_tool
+async def parse_inventory_image(image_url: str) -> str:
+    """Parse a car inventory image or PDF. Extracts car data and adds to catalogue.
+    Use when the owner sends a photo, PDF, or screenshot of their stock list."""
+    from vyapari_agents.tools.vision import tool_parse_inventory
+    return await tool_parse_inventory(image_url)
+
+
+@function_tool
+async def parse_token_proof(image_url: str, car_name: str | None = None) -> str:
+    """Parse a UPI/payment screenshot. Extracts amount, sender, status.
+    Use when the owner forwards a token payment proof."""
+    from vyapari_agents.tools.vision import tool_parse_token_screenshot
+    return await tool_parse_token_screenshot(image_url, car_name)
+
+
 # ---------------------------------------------------------------------------
 # Agent definitions
 # ---------------------------------------------------------------------------
@@ -250,6 +266,7 @@ owner_agent = Agent[StaffContext](
         open_session, get_customer_number,
         add_staff, remove_staff, list_staff,
         broadcast_message, batch_followup,
+        parse_inventory_image, parse_token_proof,
     ],
     model=config.OPENAI_MAIN_MODEL,
     model_settings=_model_settings,
@@ -272,7 +289,9 @@ sdr_agent = Agent[StaffContext](
 # Run functions (called from router handlers)
 # ---------------------------------------------------------------------------
 
-async def run_owner_agent(wa_id: str, message: str) -> str:
+async def run_owner_agent(
+    wa_id: str, message: str, image_url: str | None = None
+) -> str:
     """Run the Owner Agent for a single message turn."""
     from models import MessageRole
 
@@ -292,11 +311,17 @@ async def run_owner_agent(wa_id: str, message: str) -> str:
 
     agent = owner_agent if staff.role.value == "owner" else sdr_agent
 
-    # Build conversation history (owner's thread, last 20 messages)
-    # Owner doesn't have a "conversation" in the customer sense — use a
-    # simple list with just the current message for now. Multi-turn owner
-    # context comes from the agent's tool results (get_active_leads, etc.)
-    input_messages = [{"role": "user", "content": message}]
+    # Build input — with image if provided (for PDF upload, token screenshots)
+    if image_url:
+        input_messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": message or "What is this?"},
+                {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
+            ],
+        }]
+    else:
+        input_messages = [{"role": "user", "content": message}]
 
     try:
         result = await Runner.run(

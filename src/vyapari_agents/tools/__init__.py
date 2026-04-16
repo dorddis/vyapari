@@ -39,3 +39,8 @@ from vyapari_agents.tools.relay import (
     tool_get_customer_number,
     tool_open_session,
 )
+from vyapari_agents.tools.vision import (
+    tool_identify_car,
+    tool_parse_inventory,
+    tool_parse_token_screenshot,
+)

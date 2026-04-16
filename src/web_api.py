@@ -4,13 +4,17 @@ All chat messages go through router.dispatch() — same agents,
 same tools, same state whether it's web or WhatsApp.
 """
 
+import base64
 import logging
+import os
+import tempfile
 
 from uuid import uuid4
 
-from fastapi import APIRouter
+from fastapi import APIRouter, File, Form, UploadFile
 from pydantic import BaseModel
 
+import config
 import state
 from channels.web_clone.adapter import get_pending_messages, reset_outbox
 from models import IncomingMessage, MessageType
@@ -211,3 +215,53 @@ async def get_catalogue():
 
     available = [c for c in CATALOGUE["cars"] if not c.get("sold")]
     return {"cars": available, "total": len(available)}
+
+
+# ---------------------------------------------------------------------------
+# Image upload (for vision tools)
+# ---------------------------------------------------------------------------
+
+# In-memory image store for the web clone demo
+_uploaded_images: dict[str, str] = {}  # image_id -> base64 data URL
+
+
+@router.post("/upload-image")
+async def upload_image(
+    wa_id: str = Form(...),
+    message: str = Form(""),
+    file: UploadFile = File(...),
+):
+    """Upload an image and process it through the agent.
+
+    The image is stored as a base64 data URL and passed to the agent
+    via the IncomingMessage.media_url field. The agent's vision tools
+    will use this URL to analyze the image.
+    """
+    contents = await file.read()
+    mime = file.content_type or "image/jpeg"
+    b64 = base64.b64encode(contents).decode("utf-8")
+    data_url = f"data:{mime};base64,{b64}"
+
+    # Store for retrieval
+    image_id = f"img_{uuid4().hex[:12]}"
+    _uploaded_images[image_id] = data_url
+
+    # Create an IncomingMessage with the image
+    msg = IncomingMessage(
+        wa_id=wa_id,
+        text=message or f"[Image: {file.filename or 'uploaded'}]",
+        msg_id=f"web_{uuid4().hex[:16]}",
+        msg_type=MessageType.IMAGE,
+        media_url=data_url,
+        sender_name=None,
+    )
+
+    reply = await dispatch(msg)
+    pending = get_pending_messages(wa_id)
+
+    return {
+        "reply": reply,
+        "messages": pending,
+        "image_id": image_id,
+        "wa_id": wa_id,
+    }

@@ -117,6 +117,14 @@ async def request_callback(
     return await tool_request_callback(ctx.context.customer_id, phone_number)
 
 
+@function_tool
+async def identify_car_from_photo(image_url: str) -> str:
+    """Identify a car from a customer's photo and find matching inventory.
+    Use when the customer sends a photo of a car they're interested in."""
+    from vyapari_agents.tools.vision import tool_identify_car
+    return await tool_identify_car(image_url)
+
+
 # ---------------------------------------------------------------------------
 # Agent definition
 # ---------------------------------------------------------------------------
@@ -189,6 +197,7 @@ customer_agent = Agent[CustomerContext](
         get_business_info,
         request_escalation,
         request_callback,
+        identify_car_from_photo,
     ],
     model=config.OPENAI_MAIN_MODEL,
     model_settings=ModelSettings(
@@ -201,11 +210,14 @@ customer_agent = Agent[CustomerContext](
 # Run the agent (called from router.handle_customer_agent)
 # ---------------------------------------------------------------------------
 
-async def run_customer_agent(wa_id: str, message: str) -> AgentResponse:
+async def run_customer_agent(
+    wa_id: str, message: str, image_url: str | None = None
+) -> AgentResponse:
     """Run the Customer Agent for a single message turn.
 
     Manages session loading, context creation, post-run image extraction,
     and escalation detection. Returns AgentResponse with text + extras.
+    If image_url is provided, it's included in the user message for vision tools.
     """
     # Load customer + conversation state
     customer = await state.get_or_create_customer(wa_id)
@@ -230,11 +242,23 @@ async def run_customer_agent(wa_id: str, message: str) -> AgentResponse:
     # Build conversation history for the agent (last 20 messages)
     history_records = await state.get_messages(conversation.id, limit=20)
     input_messages = []
-    for msg in history_records:
+    for msg in history_records[:-1]:  # all except the last (current) message
         if msg.role == MessageRole.CUSTOMER:
             input_messages.append({"role": "user", "content": msg.content})
         elif msg.role in (MessageRole.AGENT, MessageRole.OWNER, MessageRole.SDR):
             input_messages.append({"role": "assistant", "content": msg.content})
+
+    # Add current message — with image if provided
+    if image_url:
+        input_messages.append({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": message or "What is this?"},
+                {"type": "image_url", "image_url": {"url": image_url, "detail": "high"}},
+            ],
+        })
+    else:
+        input_messages.append({"role": "user", "content": message})
 
     # Run the agent with full conversation history
     try:
