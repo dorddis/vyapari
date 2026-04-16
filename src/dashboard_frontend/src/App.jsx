@@ -4,7 +4,6 @@ import {
   insightCards,
   inventorySeeds,
   leadStageData,
-  onboardingSteps,
   ownerAgentSeed,
   priceBandDemand,
   sourceBreakdown,
@@ -22,12 +21,16 @@ const filterChips = ["all", "hot", "warm", "new", "escalated"];
 function App() {
   const [activeView, setActiveView] = useState("inbox");
   const [conversations, setConversations] = useState(conversationSeeds);
+  const [inventory, setInventory] = useState(inventorySeeds);
   const [selectedId, setSelectedId] = useState(conversationSeeds[0].id);
   const [leadFilter, setLeadFilter] = useState("all");
   const [leadQuery, setLeadQuery] = useState("");
   const [replyDraft, setReplyDraft] = useState("");
   const [agentDraft, setAgentDraft] = useState("");
   const [agentMessages, setAgentMessages] = useState(ownerAgentSeed);
+  const [inventoryNotice, setInventoryNotice] = useState(
+    "Inventory actions now work locally for demo mode.",
+  );
 
   const deferredLeadQuery = useDeferredValue(leadQuery);
   const selectedConversation =
@@ -67,7 +70,7 @@ function App() {
   const humanHandlingCount = conversations.filter(
     (conversation) => conversation.agentMode === "human",
   ).length;
-  const reservedCount = inventorySeeds.filter(
+  const reservedCount = inventory.filter(
     (car) => car.status === "reserved",
   ).length;
 
@@ -185,6 +188,134 @@ function App() {
     });
   }
 
+  function handleAddVehicle() {
+    const additions = [
+      {
+        name: "2023 Hyundai Venue S",
+        price: "7.45L",
+        source: "Added from quick form",
+      },
+      {
+        name: "2020 Maruti Baleno Alpha",
+        price: "5.85L",
+        source: "Added from quick form",
+      },
+      {
+        name: "2022 Kia Sonet HTK+",
+        price: "8.4L",
+        source: "Added from quick form",
+      },
+    ];
+
+    const existingNames = new Set(inventory.map((item) => item.name));
+    const nextVehicle =
+      additions.find((item) => !existingNames.has(item.name)) ?? {
+        name: `New Stock ${inventory.length + 1}`,
+        price: "6.9L",
+        source: "Added from quick form",
+      };
+
+    const nextId = `car-${Date.now()}`;
+
+    startTransition(() => {
+      setInventory((current) => [
+        {
+          id: nextId,
+          name: nextVehicle.name,
+          status: "available",
+          price: nextVehicle.price,
+          inquiries: 0,
+          source: nextVehicle.source,
+        },
+        ...current,
+      ]);
+      setInventoryNotice(`${nextVehicle.name} added to inventory.`);
+    });
+  }
+
+  function handleUploadSheet() {
+    const importedVehicles = [
+      {
+        id: `car-import-${Date.now()}`,
+        name: "2021 Mahindra XUV300 W8",
+        status: "available",
+        price: "7.8L",
+        inquiries: 1,
+        source: "Imported from uploaded sheet",
+      },
+      {
+        id: `car-import-${Date.now() + 1}`,
+        name: "2019 Honda Amaze VX",
+        status: "available",
+        price: "5.4L",
+        inquiries: 0,
+        source: "Imported from uploaded sheet",
+      },
+    ];
+
+    startTransition(() => {
+      setInventory((current) => {
+        const existingNames = new Set(current.map((item) => item.name));
+        const freshImports = importedVehicles.filter(
+          (vehicle) => !existingNames.has(vehicle.name),
+        );
+        return freshImports.length ? [...freshImports, ...current] : current;
+      });
+      setInventoryNotice("Demo import complete. 2 vehicles parsed from uploaded sheet.");
+    });
+  }
+
+  function handleUpdatePrice(itemId) {
+    startTransition(() => {
+      let updatedName = "Vehicle";
+      let updatedPrice = "";
+
+      setInventory((current) =>
+        current.map((item) => {
+          if (item.id !== itemId) {
+            return item;
+          }
+
+          const nextPrice = lowerPriceByStep(item.price, 0.1);
+          updatedName = item.name;
+          updatedPrice = nextPrice;
+
+          return {
+            ...item,
+            price: nextPrice,
+            source: "Price adjusted in dashboard",
+          };
+        }),
+      );
+
+      setInventoryNotice(`${updatedName} price updated to ${updatedPrice}.`);
+    });
+  }
+
+  function handleMarkSold(itemId) {
+    startTransition(() => {
+      let soldVehicle = "Vehicle";
+
+      setInventory((current) =>
+        current.map((item) => {
+          if (item.id !== itemId) {
+            return item;
+          }
+
+          soldVehicle = item.name;
+
+          return {
+            ...item,
+            status: "sold",
+            source: "Marked sold from dashboard",
+          };
+        }),
+      );
+
+      setInventoryNotice(`${soldVehicle} marked as sold.`);
+    });
+  }
+
   return (
     <div className="dashboard-shell">
       <aside className="sidebar">
@@ -216,19 +347,8 @@ function App() {
         </nav>
 
         <section className="sidebar-card guide-card">
-          <p className="eyebrow">Start here</p>
-          <h2>Understand the dashboard in 30 seconds</h2>
-          <div className="step-list">
-            {onboardingSteps.map((step) => (
-              <article key={step.id} className="step-card">
-                <div className="step-number">{step.id}</div>
-                <div className="step-body">
-                  <strong>{step.title}</strong>
-                  <p>{step.text}</p>
-                </div>
-              </article>
-            ))}
-          </div>
+          <p className="eyebrow">What matters</p>
+          <h2>Watch urgent leads, reply when needed, let the agent handle the rest.</h2>
         </section>
 
         <section className="sidebar-card stats-card">
@@ -285,14 +405,21 @@ function App() {
         ) : null}
 
         {activeView === "inventory" ? (
-          <InventoryView inventory={inventorySeeds} />
+          <InventoryView
+            inventory={inventory}
+            notice={inventoryNotice}
+            onAddVehicle={handleAddVehicle}
+            onMarkSold={handleMarkSold}
+            onUpdatePrice={handleUpdatePrice}
+            onUploadSheet={handleUploadSheet}
+          />
         ) : null}
 
         {activeView === "insights" ? (
           <InsightsView
             conversations={conversations}
             insightCards={insightCards}
-            inventory={inventorySeeds}
+            inventory={inventory}
           />
         ) : null}
       </main>
@@ -325,53 +452,39 @@ function InboxView({
 
   return (
     <div className="stack-view">
-      <section className="hero-card">
-        <div className="hero-copy">
-          <p className="eyebrow">Simple owner workflow</p>
-          <h3>Start with the urgent lead, not the whole CRM.</h3>
+      <section className="action-strip">
+        <div className="action-strip-copy">
+          <p className="eyebrow">Start here</p>
+          <h3>{attentionCount} lead{attentionCount === 1 ? "" : "s"} need attention today.</h3>
           <p>
-            Every WhatsApp conversation lands here. The agent handles the routine
-            work, and you step in only when the buyer is warm, confused, or ready
-            to close.
+            Open the urgent thread first. Everything else can stay with the agent
+            unless you want to step in.
           </p>
-          <div className="hero-actions">
-            <button type="button" className="primary-button" onClick={onJumpToUrgentLead}>
-              Open urgent lead
-            </button>
-            <button
-              type="button"
-              className="ghost-button"
-              onClick={() => onLeadFilterChange("escalated")}
-            >
-              Show escalations
-            </button>
-          </div>
         </div>
-
-        <WorkflowVisual />
-      </section>
-
-      <section className="summary-grid">
-        <MetricTile
-          kicker="Immediate"
-          value={String(attentionCount)}
-          note="Leads that need owner attention now"
-        />
-        <MetricTile
-          kicker="Reserved"
-          value={String(reservedCount)}
-          note="Cars already protected from double-selling"
-        />
-        <MetricTile
-          kicker="Top demand"
-          value="6L-9L"
-          note="Mid-range family SUVs are leading"
-        />
-        <MetricTile
-          kicker="Quick win"
-          value="Aman"
-          note="Best chance to convert with finance guidance"
-        />
+        <div className="action-strip-metrics">
+          <MetricTile
+            kicker="Urgent"
+            value={String(attentionCount)}
+            note="Need owner attention"
+          />
+          <MetricTile
+            kicker="Reserved"
+            value={String(reservedCount)}
+            note="Protected from double-selling"
+          />
+        </div>
+        <div className="hero-actions">
+          <button type="button" className="primary-button" onClick={onJumpToUrgentLead}>
+            Open urgent lead
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
+            onClick={() => onLeadFilterChange("escalated")}
+          >
+            Show escalations
+          </button>
+        </div>
       </section>
 
       <div className="grid-inbox">
@@ -529,7 +642,7 @@ function InboxView({
             </ul>
           </div>
 
-          <div className="score-grid">
+          <div className="score-grid compact">
             {leadScores.map((score) => (
               <ScoreBar key={score.label} score={score} />
             ))}
@@ -538,7 +651,7 @@ function InboxView({
           <div className="oracle-panel">
             <div className="oracle-header">
               <h4>Ask the owner agent</h4>
-              <span>Natural language answers, not dashboard digging</span>
+              <span>Ask one question and get the next best move.</span>
             </div>
 
             <div className="oracle-messages">
@@ -554,7 +667,7 @@ function InboxView({
 
             <textarea
               rows="3"
-              placeholder="Ask: Which lead is closest to buying today?"
+              placeholder="Ask: Which lead should I handle next?"
               value={agentDraft}
               onChange={(event) => onAgentDraftChange(event.target.value)}
             />
@@ -568,7 +681,14 @@ function InboxView({
   );
 }
 
-function InventoryView({ inventory }) {
+function InventoryView({
+  inventory,
+  notice,
+  onAddVehicle,
+  onMarkSold,
+  onUpdatePrice,
+  onUploadSheet,
+}) {
   const statusItems = [
     {
       label: "Available",
@@ -607,10 +727,10 @@ function InventoryView({ inventory }) {
             complicated back office.
           </p>
           <div className="hero-actions">
-            <button type="button" className="primary-button">
+            <button type="button" className="primary-button" onClick={onAddVehicle}>
               Add vehicle
             </button>
-            <button type="button" className="ghost-button">
+            <button type="button" className="ghost-button" onClick={onUploadSheet}>
               Upload PDF or sheet
             </button>
           </div>
@@ -621,6 +741,7 @@ function InventoryView({ inventory }) {
 
       <div className="inventory-layout">
         <section className="panel inventory-table-panel">
+          <div className="inline-notice">{notice}</div>
           <div className="panel-header">
             <div className="header-copy">
               <p className="eyebrow">Live inventory</p>
@@ -643,11 +764,21 @@ function InventoryView({ inventory }) {
                   <span>{item.inquiries} inquiries</span>
                 </div>
                 <div className="row-actions">
-                  <button type="button" className="ghost-button small">
+                  <button
+                    type="button"
+                    className="ghost-button small"
+                    onClick={() => onUpdatePrice(item.id)}
+                    disabled={item.status === "sold"}
+                  >
                     Update price
                   </button>
-                  <button type="button" className="ghost-button small">
-                    Mark sold
+                  <button
+                    type="button"
+                    className="ghost-button small"
+                    onClick={() => onMarkSold(item.id)}
+                    disabled={item.status === "sold"}
+                  >
+                    {item.status === "sold" ? "Sold" : "Mark sold"}
                   </button>
                 </div>
               </div>
@@ -679,6 +810,20 @@ function InventoryView({ inventory }) {
       </div>
     </div>
   );
+}
+
+function lowerPriceByStep(price, step) {
+  const value = Number.parseFloat(price.replace("L", ""));
+  if (Number.isNaN(value)) {
+    return price;
+  }
+
+  const nextValue = Math.max(0.5, Math.round((value - step) * 100) / 100);
+  return `${trimTrailingZero(nextValue)}L`;
+}
+
+function trimTrailingZero(value) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0$/, "");
 }
 
 function InsightsView({ conversations, insightCards, inventory }) {
@@ -802,36 +947,6 @@ function InsightsView({ conversations, insightCards, inventory }) {
           </div>
         </div>
       </section>
-    </div>
-  );
-}
-
-function WorkflowVisual() {
-  return (
-    <div className="workflow-visual" aria-hidden="true">
-      <div className="flow-node">
-        <span className="step-number">1</span>
-        <div>
-          <strong className="flow-node-title">Customer asks on WhatsApp</strong>
-          <p className="flow-node-note">Agent replies instantly and qualifies intent.</p>
-        </div>
-      </div>
-      <div className="workflow-line" />
-      <div className="flow-node">
-        <span className="step-number">2</span>
-        <div>
-          <strong className="flow-node-title">Dashboard shows only what matters</strong>
-          <p className="flow-node-note">Escalations, summaries, and the next move appear clearly.</p>
-        </div>
-      </div>
-      <div className="workflow-line" />
-      <div className="flow-node">
-        <span className="step-number">3</span>
-        <div>
-          <strong className="flow-node-title">Owner steps in without breaking context</strong>
-          <p className="flow-node-note">Same thread, same customer, no restart needed.</p>
-        </div>
-      </div>
     </div>
   );
 }
