@@ -1,0 +1,223 @@
+:root {
+  --wa-header: #075e54;
+  --wa-send: #25d366;
+  --wa-chat-bg: #e5ddd5;
+  --wa-incoming: #ffffff;
+  --wa-outgoing: #dcf8c6;
+  --wa-text: #111b21;
+  --wa-meta: #667781;
+  --wa-surface: #f0f2f5;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-height: 100vh;
+  background: radial-gradient(circle at top, #1d2b34 0%, #111b21 65%);
+  color: #f7f8f8;
+  font-family: "Segoe UI", Arial, sans-serif;
+}
+
+.demo-layout {
+  width: 100%;
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+
+.phone {
+  width: min(100%, 390px);
+  height: min(84vh, 740px);
+  border-radius: 28px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  background: var(--wa-chat-bg);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.5);
+  border: 2px solid #2a3942;
+}
+
+.wa-header {
+  min-height: 66px;
+  padding: 12px;
+  background: var(--wa-header);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  background: #128c7e;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+
+.header-meta {
+  flex: 1;
+}
+
+.name {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.status {
+  font-size: 12px;
+  opacity: 0.85;
+}
+
+.reset-btn {
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: transparent;
+  color: white;
+  border-radius: 16px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.chat-area {
+  flex: 1;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  background-image: url("data:image/svg+xml,%3Csvg width='54' height='54' viewBox='0 0 54 54' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%23c7bfb6' fill-opacity='0.24'%3E%3Cpath d='M18 15h1v1h-1zm17 0h1v1h-1zM8 28h1v1H8zm29 13h1v1h-1zM20 45h1v1h-1zM2 2h1v1H2z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
+}
+
+.bubble {
+  max-width: 84%;
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: var(--wa-text);
+  line-height: 1.35;
+  font-size: 14px;
+  word-break: break-word;
+}
+
+.bubble.customer {
+  background: var(--wa-outgoing);
+  align-self: flex-end;
+  border-top-right-radius: 2px;
+}
+
+.bubble.bot {
+  background: var(--wa-incoming);
+  align-self: flex-start;
+  border-top-left-radius: 2px;
+}
+
+.bubble.system {
+  align-self: center;
+  font-size: 12px;
+  color: #5f6368;
+  background: #fef3c7;
+  border-radius: 10px;
+  max-width: 100%;
+}
+
+.meta {
+  margin-top: 4px;
+  text-align: right;
+  font-size: 11px;
+  color: var(--wa-meta);
+}
+
+.typing {
+  align-self: flex-start;
+  background: #fff;
+  border-radius: 8px;
+  padding: 10px 12px;
+  display: flex;
+  gap: 4px;
+}
+
+.typing span {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #9ca3af;
+  animation: typing 1.2s infinite ease-in-out;
+}
+
+.typing span:nth-child(2) {
+  animation-delay: 0.18s;
+}
+
+.typing span:nth-child(3) {
+  animation-delay: 0.36s;
+}
+
+@keyframes typing {
+  0%, 60%, 100% {
+    transform: translateY(0);
+  }
+  30% {
+    transform: translateY(-4px);
+  }
+}
+
+.quick-actions {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 8px 10px;
+  background: var(--wa-surface);
+  border-top: 1px solid #dde2e6;
+}
+
+.chip {
+  border: 1px solid #cbd5dc;
+  background: #fff;
+  color: #15323c;
+  border-radius: 999px;
+  padding: 7px 12px;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.input-area {
+  padding: 8px;
+  display: flex;
+  gap: 8px;
+  background: var(--wa-surface);
+  border-top: 1px solid #dde2e6;
+}
+
+.input-area input {
+  flex: 1;
+  border: none;
+  border-radius: 22px;
+  padding: 11px 14px;
+  font-size: 14px;
+  outline: none;
+}
+
+.input-area button {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: none;
+  background: var(--wa-send);
+  color: white;
+  font-size: 19px;
+  cursor: pointer;
+}
+
+.input-area button:disabled {
+  opacity: 0.6;
+  cursor: default;
+}

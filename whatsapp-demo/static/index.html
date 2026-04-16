@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Vyapari - WhatsApp Demo Chat</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main class="demo-layout">
+    <section class="phone">
+      <div class="wa-header">
+        <div class="avatar">SM</div>
+        <div class="header-meta">
+          <div class="name">Sharma Motors</div>
+          <div class="status" id="chat-status">online</div>
+        </div>
+        <button id="reset-chat" class="reset-btn" type="button">Reset</button>
+      </div>
+
+      <div id="messages" class="chat-area"></div>
+
+      <div class="quick-actions" id="quick-actions">
+        <button type="button" class="chip">Show SUVs under 10L</button>
+        <button type="button" class="chip">Compare Creta vs Nexon</button>
+        <button type="button" class="chip">Book a test drive</button>
+      </div>
+
+      <form id="chat-form" class="input-area">
+        <input id="message-input" type="text" placeholder="Type a message..." autocomplete="off" maxlength="1000">
+        <button id="send-btn" type="submit" aria-label="Send message">&#10148;</button>
+      </form>
+    </section>
+  </main>
+
+  <script src="/static/customer.js"></script>
+</body>
+</html>
