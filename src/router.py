@@ -140,7 +140,7 @@ async def handle_customer_agent(msg: IncomingMessage, conv_state: ConversationSt
             log.error(f"Gemini fallback error: {e}")
             return "Sorry, I'm having trouble right now. Please try again!"
 
-    from agents.customer import run_customer_agent
+    from vyapari_agents.customer import run_customer_agent
     return await run_customer_agent(msg.wa_id, msg.text or "")
 
 
@@ -155,7 +155,7 @@ async def handle_owner_agent(msg: IncomingMessage, staff_name: str | None) -> st
             log.error(f"Gemini owner fallback error: {e}")
             return "Sorry, something went wrong."
 
-    from agents.owner import run_owner_agent
+    from vyapari_agents.owner import run_owner_agent
     return await run_owner_agent(msg.wa_id, msg.text or "")
 
 
@@ -164,7 +164,7 @@ async def handle_sdr_agent(msg: IncomingMessage, staff_name: str | None) -> str:
     if not config.USE_OPENAI:
         return "SDR agent requires OpenAI. Set OPENAI_API_KEY in .env."
 
-    from agents.owner import run_owner_agent
+    from vyapari_agents.owner import run_owner_agent
     return await run_owner_agent(msg.wa_id, msg.text or "")
 
 

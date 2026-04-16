@@ -15,20 +15,19 @@ import json
 import logging
 
 from agents import Agent, Runner, function_tool, RunContextWrapper, ModelSettings
-from agents.extensions.handoff_prompt import RECOMMENDED_PROMPT_PREFIX
 
 import config
 import state
-from agents.context import CustomerContext
-from agents.prompts import build_customer_system_prompt
-from agents.tools.catalogue import (
+from vyapari_agents.context import CustomerContext
+from vyapari_agents.prompts import build_customer_system_prompt
+from vyapari_agents.tools.catalogue import (
     tool_check_availability,
     tool_compare_items,
     tool_get_item_details,
     tool_get_pricing_info,
     tool_search_catalogue,
 )
-from agents.tools.business import tool_get_business_info, tool_get_faq_answer
+from vyapari_agents.tools.business import tool_get_business_info, tool_get_faq_answer
 from services.escalation import detect_escalation
 
 log = logging.getLogger("vyapari.agents.customer")
@@ -95,7 +94,7 @@ async def request_escalation(
 ) -> str:
     """Escalate this conversation to a human staff member. Use when the customer
     wants to negotiate price, book a test drive, talk to someone, or is frustrated."""
-    from agents.tools.communication import tool_request_escalation
+    from vyapari_agents.tools.communication import tool_request_escalation
 
     result = await tool_request_escalation(ctx.context.customer_id, reason, summary)
     ctx.context.conversation_state = "escalated"
@@ -108,7 +107,7 @@ async def request_callback(
     phone_number: str,
 ) -> str:
     """Save a callback request when the customer wants a phone call."""
-    from agents.tools.communication import tool_request_callback
+    from vyapari_agents.tools.communication import tool_request_callback
 
     return await tool_request_callback(ctx.context.customer_id, phone_number)
 
@@ -176,11 +175,20 @@ async def run_customer_agent(wa_id: str, message: str) -> str:
     from models import MessageRole
     await state.add_message(conversation.id, MessageRole.CUSTOMER, message)
 
-    # Run the agent
+    # Build conversation history for the agent (last 20 messages)
+    history_records = await state.get_messages(conversation.id, limit=20)
+    input_messages = []
+    for msg in history_records:
+        if msg.role == MessageRole.CUSTOMER:
+            input_messages.append({"role": "user", "content": msg.content})
+        elif msg.role in (MessageRole.AGENT, MessageRole.OWNER, MessageRole.SDR):
+            input_messages.append({"role": "assistant", "content": msg.content})
+
+    # Run the agent with full conversation history
     try:
         result = await Runner.run(
             starting_agent=customer_agent,
-            input=message,
+            input=input_messages,
             context=ctx,
         )
         reply = result.final_output or "I'm sorry, I couldn't process that. Please try again."

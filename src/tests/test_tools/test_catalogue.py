@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from agents.tools.catalogue import (
+from vyapari_agents.tools.catalogue import (
     tool_check_availability,
     tool_compare_items,
     tool_get_item_details,

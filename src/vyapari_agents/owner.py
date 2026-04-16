@@ -10,9 +10,9 @@ from agents import Agent, Runner, function_tool, RunContextWrapper, ModelSetting
 
 import config
 import state
-from agents.context import StaffContext
-from agents.prompts import build_owner_system_prompt, build_sdr_system_prompt
-from agents.tools.catalogue import (
+from vyapari_agents.context import StaffContext
+from vyapari_agents.prompts import build_owner_system_prompt, build_sdr_system_prompt
+from vyapari_agents.tools.catalogue import (
     tool_add_item,
     tool_check_availability,
     tool_get_catalogue_summary,
@@ -22,7 +22,7 @@ from agents.tools.catalogue import (
     tool_search_catalogue,
     tool_update_item,
 )
-from agents.tools.business import (
+from vyapari_agents.tools.business import (
     tool_add_faq,
     tool_get_business_info,
     tool_get_faq_answer,
@@ -141,21 +141,21 @@ async def get_active_leads(
     limit: int = 10,
 ) -> str:
     """Get active leads, optionally filtered by status or search query."""
-    from agents.tools.leads import tool_get_active_leads
+    from vyapari_agents.tools.leads import tool_get_active_leads
     return await tool_get_active_leads(status_filter, search_query, limit)
 
 
 @function_tool
 async def get_lead_details(identifier: str) -> str:
     """Get full details for a customer by phone number or name."""
-    from agents.tools.leads import tool_get_lead_details
+    from vyapari_agents.tools.leads import tool_get_lead_details
     return await tool_get_lead_details(identifier)
 
 
 @function_tool
 async def get_stats(period: str = "today") -> str:
     """Get business stats — lead counts, top queried cars, by status."""
-    from agents.tools.leads import tool_get_stats
+    from vyapari_agents.tools.leads import tool_get_stats
     return await tool_get_stats(period)
 
 
@@ -165,14 +165,14 @@ async def open_session(
     query: str,
 ) -> str:
     """Open a relay session to chat with a customer. Search by name or car."""
-    from agents.tools.relay import tool_open_session
+    from vyapari_agents.tools.relay import tool_open_session
     return await tool_open_session(ctx.context.staff_id, query)
 
 
 @function_tool
 async def get_customer_number(identifier: str) -> str:
     """Get a customer's phone number for direct call."""
-    from agents.tools.relay import tool_get_customer_number
+    from vyapari_agents.tools.relay import tool_get_customer_number
     return await tool_get_customer_number(identifier)
 
 
@@ -184,42 +184,42 @@ async def add_staff(
     role: str = "sdr",
 ) -> str:
     """Add a new staff member and generate an OTP invite."""
-    from agents.tools.staff import tool_add_staff
+    from vyapari_agents.tools.staff import tool_add_staff
     return await tool_add_staff(name, wa_id, role, added_by=ctx.context.staff_id)
 
 
 @function_tool
 async def remove_staff(identifier: str) -> str:
     """Remove a staff member by phone number or name."""
-    from agents.tools.staff import tool_remove_staff
+    from vyapari_agents.tools.staff import tool_remove_staff
     return await tool_remove_staff(identifier)
 
 
 @function_tool
 async def list_staff() -> str:
     """List all active and invited staff members."""
-    from agents.tools.staff import tool_list_staff
+    from vyapari_agents.tools.staff import tool_list_staff
     return await tool_list_staff()
 
 
 @function_tool
 async def assign_lead(customer_identifier: str, staff_identifier: str) -> str:
     """Assign a lead to a specific staff member."""
-    from agents.tools.leads import tool_assign_lead
+    from vyapari_agents.tools.leads import tool_assign_lead
     return await tool_assign_lead(customer_identifier, staff_identifier)
 
 
 @function_tool
 async def broadcast_message(message_text: str, filter_status: str = "all") -> str:
     """Send a message to multiple customers."""
-    from agents.tools.communication import tool_broadcast_message
+    from vyapari_agents.tools.communication import tool_broadcast_message
     return await tool_broadcast_message(message_text, filter_status)
 
 
 @function_tool
 async def batch_followup(date: str = "yesterday", status_filter: str = "warm,hot") -> str:
     """Generate and send personalized follow-ups for leads from a date."""
-    from agents.tools.leads import tool_batch_followup
+    from vyapari_agents.tools.leads import tool_batch_followup
     return await tool_batch_followup(date, status_filter)
 
 
@@ -274,6 +274,8 @@ sdr_agent = Agent[StaffContext](
 
 async def run_owner_agent(wa_id: str, message: str) -> str:
     """Run the Owner Agent for a single message turn."""
+    from models import MessageRole
+
     staff = await state.get_staff(wa_id)
     if not staff:
         return "Staff not found."
@@ -290,10 +292,16 @@ async def run_owner_agent(wa_id: str, message: str) -> str:
 
     agent = owner_agent if staff.role.value == "owner" else sdr_agent
 
+    # Build conversation history (owner's thread, last 20 messages)
+    # Owner doesn't have a "conversation" in the customer sense — use a
+    # simple list with just the current message for now. Multi-turn owner
+    # context comes from the agent's tool results (get_active_leads, etc.)
+    input_messages = [{"role": "user", "content": message}]
+
     try:
         result = await Runner.run(
             starting_agent=agent,
-            input=message,
+            input=input_messages,
             context=ctx,
         )
         return result.final_output or "I couldn't process that. Try again."
