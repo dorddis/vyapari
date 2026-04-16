@@ -281,7 +281,26 @@ def tool_update_item(item_id: int, **fields) -> str:
 
 
 def tool_mark_sold(item_id: int) -> str:
-    """Mark a car as sold."""
+    """Mark a car as sold.
+
+    Use this tool when:
+    - the owner confirms that a specific car has been sold
+
+    Do not use this tool when:
+    - the car match is ambiguous
+    - the owner has not explicitly confirmed the final target car
+
+    Before calling:
+    - resolve the exact item ID
+    - confirm the action with the owner because it changes future customer answers
+
+    After calling:
+    - confirm which car was marked sold
+    - stop the current action flow unless the owner asks for follow-up actions
+
+    This tool is terminal for the current action flow:
+    - yes
+    """
     car = mark_car_sold(item_id)
     if not car:
         return json.dumps({"success": False, "data": None, "message": f"Car ID {item_id} not found."})
@@ -296,7 +315,27 @@ def tool_mark_sold(item_id: int) -> str:
 
 
 def tool_mark_reserved(item_id: int, customer_name: str, token_amount: float | None = None) -> str:
-    """Reserve a car for a customer (token received)."""
+    """Reserve a car for a customer.
+
+    Use this tool when:
+    - the owner explicitly wants to hold a specific car for a named customer
+    - token payment or manual hold confirmation has been received
+
+    Do not use this tool when:
+    - the car or customer is unclear
+    - the owner has not confirmed the hold action
+
+    Before calling:
+    - resolve the exact item ID and customer name
+    - confirm the hold action with the owner
+
+    After calling:
+    - confirm which car is now reserved and for whom
+    - stop the current action flow unless the owner asks for another operational action
+
+    This tool is terminal for the current action flow:
+    - yes
+    """
     car = get_car_detail(item_id)
     if not car:
         return json.dumps({"success": False, "data": None, "message": f"Car ID {item_id} not found."})

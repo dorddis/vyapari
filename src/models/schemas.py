@@ -154,6 +154,15 @@ class EscalationRecord(BaseModel):
     resolved_at: datetime | None = None
 
 
+class PendingOwnerActionRecord(BaseModel):
+    staff_wa_id: str
+    action_name: str
+    payload: dict[str, Any] = Field(default_factory=dict)
+    summary: str
+    confirmation_prompt: str
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
 class DailyWrapRecord(BaseModel):
     id: str
     date: str  # YYYY-MM-DD

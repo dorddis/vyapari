@@ -4,12 +4,14 @@ Owner gets 19 tools (full access). SDR gets 7 (read-only + relay).
 Per-staff sessions via session_id = f"staff_{wa_id}".
 """
 
+import json
 import logging
 
 from agents import Agent, Runner, function_tool, RunContextWrapper, ModelSettings
 
 import config
 import state
+from catalogue import get_car_detail
 from vyapari_agents.context import StaffContext
 from vyapari_agents.prompts import build_owner_system_prompt, build_sdr_system_prompt
 from vyapari_agents.tools.catalogue import (
@@ -30,6 +32,189 @@ from vyapari_agents.tools.business import (
 )
 
 log = logging.getLogger("vyapari.agents.owner")
+
+HARD_CONFIRM_ACTIONS = {
+    "mark_sold",
+    "mark_reserved",
+    "remove_staff",
+    "broadcast_message",
+    "batch_followup",
+}
+CONFIRM_WORDS = {"yes", "y", "haan", "ha", "confirm", "confirmed", "ok", "okay", "kar do"}
+CANCEL_WORDS = {"no", "n", "cancel", "stop", "mat karo", "nahin", "nahi"}
+
+
+def _parse_tool_message(result: str) -> str:
+    try:
+        payload = json.loads(result)
+    except json.JSONDecodeError:
+        return result
+    return payload.get("message", result)
+
+
+def _describe_car(item_id: int) -> str | None:
+    car = get_car_detail(item_id)
+    if not car:
+        return None
+    return f"{car['year']} {car['make']} {car['model']} {car['variant']} (ID {item_id})"
+
+
+async def _resolve_staff_for_confirmation(identifier: str) -> tuple[str, str] | None:
+    direct = await state.get_staff(identifier)
+    if direct:
+        return direct.wa_id, direct.name
+
+    all_staff = await state.list_staff()
+    matches = [staff for staff in all_staff if identifier.lower() in staff.name.lower()]
+    if len(matches) == 1:
+        return matches[0].wa_id, matches[0].name
+    return None
+
+
+async def _count_broadcast_recipients(filter_status: str) -> int:
+    from models import LeadStatus
+
+    status_filter = None
+    if filter_status != "all":
+        mapping = {
+            "hot": [LeadStatus.HOT],
+            "warm": [LeadStatus.WARM, LeadStatus.HOT],
+            "recent": [LeadStatus.NEW, LeadStatus.WARM, LeadStatus.HOT],
+        }
+        status_filter = mapping.get(filter_status)
+    recipients = await state.list_customers(status_filter=status_filter, limit=1000)
+    return len(recipients)
+
+
+async def _count_followup_recipients(status_filter: str) -> int:
+    from models import LeadStatus
+
+    valid_statuses = {status.value: status for status in LeadStatus}
+    statuses = [
+        valid_statuses[value.strip()]
+        for value in status_filter.split(",")
+        if value.strip() in valid_statuses
+    ]
+    if not statuses:
+        statuses = [LeadStatus.WARM, LeadStatus.HOT]
+    recipients = await state.list_customers(status_filter=statuses, limit=1000)
+    return len(recipients)
+
+
+async def request_owner_confirmation(
+    staff_wa_id: str,
+    action_name: str,
+    payload: dict,
+) -> str:
+    """Stage a hard-confirm owner action and return the human-facing prompt."""
+    if action_name not in HARD_CONFIRM_ACTIONS:
+        raise ValueError(f"Action '{action_name}' is not hard-confirmed.")
+
+    if action_name == "mark_sold":
+        description = _describe_car(payload["item_id"])
+        if not description:
+            return _parse_tool_message(tool_mark_sold(payload["item_id"]))
+        summary = f"mark {description} as sold"
+        prompt = f"Confirm sale update: {description}. Reply YES to confirm or NO to cancel."
+    elif action_name == "mark_reserved":
+        description = _describe_car(payload["item_id"])
+        if not description:
+            return _parse_tool_message(tool_mark_reserved(**payload))
+        token_amount = payload.get("token_amount")
+        token_text = f" with token Rs {token_amount}" if token_amount is not None else ""
+        summary = f"reserve {description} for {payload['customer_name']}{token_text}"
+        prompt = (
+            f"Confirm reservation: {description} for {payload['customer_name']}{token_text}. "
+            "Reply YES to confirm or NO to cancel."
+        )
+    elif action_name == "remove_staff":
+        resolved = await _resolve_staff_for_confirmation(payload["identifier"])
+        if not resolved:
+            from vyapari_agents.tools.staff import tool_remove_staff
+            return _parse_tool_message(await tool_remove_staff(payload["identifier"]))
+        resolved_wa_id, resolved_name = resolved
+        payload = {**payload, "identifier": resolved_wa_id, "resolved_name": resolved_name}
+        summary = f"remove {resolved_name} ({resolved_wa_id})"
+        prompt = f"Confirm staff removal: {resolved_name} ({resolved_wa_id}). Reply YES to confirm or NO to cancel."
+    elif action_name == "broadcast_message":
+        recipient_count = await _count_broadcast_recipients(payload["filter_status"])
+        summary = f"broadcast to {recipient_count} customer(s)"
+        prompt = (
+            f"Confirm broadcast to {recipient_count} customer(s) with filter '{payload['filter_status']}': "
+            f"\"{payload['message_text']}\" Reply YES to confirm or NO to cancel."
+        )
+    elif action_name == "batch_followup":
+        recipient_count = await _count_followup_recipients(payload["status_filter"])
+        summary = (
+            f"send batch follow-ups to {recipient_count} lead(s) "
+            f"for {payload['date']} with filter '{payload['status_filter']}'"
+        )
+        prompt = (
+            f"Confirm batch follow-up for {recipient_count} lead(s) "
+            f"for {payload['date']} with filter '{payload['status_filter']}'. "
+            "Reply YES to confirm or NO to cancel."
+        )
+    else:
+        raise ValueError(f"Unsupported action '{action_name}'.")
+
+    await state.set_pending_owner_action(
+        staff_wa_id=staff_wa_id,
+        action_name=action_name,
+        payload=payload,
+        summary=summary,
+        confirmation_prompt=prompt,
+    )
+    return prompt
+
+
+async def _execute_pending_owner_action(action_name: str, payload: dict) -> str:
+    if action_name == "mark_sold":
+        return _parse_tool_message(tool_mark_sold(payload["item_id"]))
+    if action_name == "mark_reserved":
+        return _parse_tool_message(tool_mark_reserved(**payload))
+    if action_name == "remove_staff":
+        from vyapari_agents.tools.staff import tool_remove_staff
+        return _parse_tool_message(await tool_remove_staff(payload["identifier"]))
+    if action_name == "broadcast_message":
+        from vyapari_agents.tools.communication import tool_broadcast_message
+        return _parse_tool_message(
+            await tool_broadcast_message(payload["message_text"], payload["filter_status"])
+        )
+    if action_name == "batch_followup":
+        from vyapari_agents.tools.leads import tool_batch_followup
+        return _parse_tool_message(
+            await tool_batch_followup(payload["date"], payload["status_filter"])
+        )
+    return "Pending action type is not supported."
+
+
+async def handle_pending_owner_confirmation(staff_wa_id: str, message: str) -> str | None:
+    """Resolve a queued owner confirmation without another LLM turn."""
+    pending = await state.get_pending_owner_action(staff_wa_id)
+    if not pending:
+        return None
+
+    normalized = " ".join((message or "").strip().lower().split())
+    if normalized in CONFIRM_WORDS:
+        try:
+            return await _execute_pending_owner_action(pending.action_name, pending.payload)
+        finally:
+            await state.clear_pending_owner_action(staff_wa_id)
+    if normalized in CANCEL_WORDS:
+        await state.clear_pending_owner_action(staff_wa_id)
+        return f"Cancelled. I did not {pending.summary}."
+    return f"{pending.confirmation_prompt} Pending action is still waiting."
+
+
+def _confirmation_tool_result(action_name: str, prompt: str) -> str:
+    return json.dumps({
+        "success": False,
+        "data": {
+            "confirmation_required": True,
+            "action_name": action_name,
+        },
+        "message": prompt,
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -105,15 +290,37 @@ def update_item(item_id: int, field: str, value: str) -> str:
 
 
 @function_tool
-def mark_sold(item_id: int) -> str:
+async def mark_sold(
+    ctx: RunContextWrapper[StaffContext],
+    item_id: int,
+) -> str:
     """Mark a car as sold."""
-    return tool_mark_sold(item_id)
+    prompt = await request_owner_confirmation(
+        ctx.context.staff_id,
+        "mark_sold",
+        {"item_id": item_id},
+    )
+    return _confirmation_tool_result("mark_sold", prompt)
 
 
 @function_tool
-def mark_reserved(item_id: int, customer_name: str, token_amount: float | None = None) -> str:
+async def mark_reserved(
+    ctx: RunContextWrapper[StaffContext],
+    item_id: int,
+    customer_name: str,
+    token_amount: float | None = None,
+) -> str:
     """Reserve a car for a customer (token payment received)."""
-    return tool_mark_reserved(item_id, customer_name, token_amount)
+    prompt = await request_owner_confirmation(
+        ctx.context.staff_id,
+        "mark_reserved",
+        {
+            "item_id": item_id,
+            "customer_name": customer_name,
+            "token_amount": token_amount,
+        },
+    )
+    return _confirmation_tool_result("mark_reserved", prompt)
 
 
 @function_tool
@@ -189,10 +396,17 @@ async def add_staff(
 
 
 @function_tool
-async def remove_staff(identifier: str) -> str:
+async def remove_staff(
+    ctx: RunContextWrapper[StaffContext],
+    identifier: str,
+) -> str:
     """Remove a staff member by phone number or name."""
-    from vyapari_agents.tools.staff import tool_remove_staff
-    return await tool_remove_staff(identifier)
+    prompt = await request_owner_confirmation(
+        ctx.context.staff_id,
+        "remove_staff",
+        {"identifier": identifier},
+    )
+    return _confirmation_tool_result("remove_staff", prompt)
 
 
 @function_tool
@@ -210,17 +424,39 @@ async def assign_lead(customer_identifier: str, staff_identifier: str) -> str:
 
 
 @function_tool
-async def broadcast_message(message_text: str, filter_status: str = "all") -> str:
+async def broadcast_message(
+    ctx: RunContextWrapper[StaffContext],
+    message_text: str,
+    filter_status: str = "all",
+) -> str:
     """Send a message to multiple customers."""
-    from vyapari_agents.tools.communication import tool_broadcast_message
-    return await tool_broadcast_message(message_text, filter_status)
+    prompt = await request_owner_confirmation(
+        ctx.context.staff_id,
+        "broadcast_message",
+        {
+            "message_text": message_text,
+            "filter_status": filter_status,
+        },
+    )
+    return _confirmation_tool_result("broadcast_message", prompt)
 
 
 @function_tool
-async def batch_followup(date: str = "yesterday", status_filter: str = "warm,hot") -> str:
+async def batch_followup(
+    ctx: RunContextWrapper[StaffContext],
+    date: str = "yesterday",
+    status_filter: str = "warm,hot",
+) -> str:
     """Generate and send personalized follow-ups for leads from a date."""
-    from vyapari_agents.tools.leads import tool_batch_followup
-    return await tool_batch_followup(date, status_filter)
+    prompt = await request_owner_confirmation(
+        ctx.context.staff_id,
+        "batch_followup",
+        {
+            "date": date,
+            "status_filter": status_filter,
+        },
+    )
+    return _confirmation_tool_result("batch_followup", prompt)
 
 
 # ---------------------------------------------------------------------------
@@ -279,6 +515,10 @@ async def run_owner_agent(wa_id: str, message: str) -> str:
     staff = await state.get_staff(wa_id)
     if not staff:
         return "Staff not found."
+
+    pending_confirmation_reply = await handle_pending_owner_confirmation(wa_id, message)
+    if pending_confirmation_reply is not None:
+        return pending_confirmation_reply
 
     relay = await state.get_active_relay_for_staff(wa_id)
 

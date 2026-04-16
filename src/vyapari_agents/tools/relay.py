@@ -9,8 +9,26 @@ from services.relay import open_relay
 async def tool_open_session(staff_wa_id: str, query: str) -> str:
     """Search for matching leads and open a relay session.
 
+    Use this tool when:
+    - the owner or SDR wants to personally take over a customer conversation
+
+    Do not use this tool when:
+    - the request is only to inspect lead details without starting a relay
+    - the customer target is too ambiguous to resolve
+
+    Before calling:
+    - search for the matching customer or lead first
+    - if multiple matches exist, return the shortlist instead of forcing a session
+
+    After calling:
+    - confirm which session was opened or what shortlist must be resolved next
+    - once a session is opened, treat that action as complete for the turn
+
     If multiple matches, returns a numbered list for the owner to pick.
     If one match, opens the session directly.
+
+    This tool is terminal for the current action flow:
+    - yes
     """
     # Search for matching customers
     customers = await state.list_customers(search_query=query, limit=10)

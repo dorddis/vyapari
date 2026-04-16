@@ -43,7 +43,26 @@ async def tool_add_staff(
 
 
 async def tool_remove_staff(identifier: str) -> str:
-    """Remove a staff member by wa_id or name."""
+    """Remove a staff member by wa_id or name.
+
+    Use this tool when:
+    - the owner explicitly wants to revoke a staff member's access
+
+    Do not use this tool when:
+    - the target staff member is ambiguous
+    - the owner has not confirmed the removal action
+
+    Before calling:
+    - resolve the exact staff member
+    - confirm the removal because it revokes access and closes active sessions
+
+    After calling:
+    - confirm who was removed
+    - stop the current action flow unless the owner asks for another staff action
+
+    This tool is terminal for the current action flow:
+    - yes
+    """
     # Try direct wa_id
     removed = await state.remove_staff(identifier)
     if removed:

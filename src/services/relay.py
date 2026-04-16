@@ -88,6 +88,84 @@ async def get_queued_escalations(staff_wa_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Relay command helpers
+# ---------------------------------------------------------------------------
+
+async def get_active_session_customer(staff_wa_id: str) -> tuple[RelaySessionRecord | None, object | None]:
+    """Return the active relay session and customer, if any."""
+    session = await state.get_active_relay_for_staff(staff_wa_id)
+    if not session:
+        return None, None
+    customer = await state.get_customer(session.customer_wa_id)
+    return session, customer
+
+
+async def get_relay_customer_number(staff_wa_id: str) -> str:
+    """Return the active relay customer's phone number."""
+    session, customer = await get_active_session_customer(staff_wa_id)
+    if not session or not customer:
+        return "No active session."
+    return f"{customer.name}: +{customer.wa_id}"
+
+
+async def get_relay_status(staff_wa_id: str) -> str:
+    """Return current lead status and conversation metadata for the active relay."""
+    session, customer = await get_active_session_customer(staff_wa_id)
+    if not session or not customer:
+        return "No active session."
+
+    conversation = await state.get_conversation(customer.wa_id)
+    messages = await state.get_messages(conversation.id) if conversation else []
+    last_message = messages[-1].content if messages else "No messages yet."
+    interested_cars = ", ".join(customer.interested_cars) if customer.interested_cars else "Browsing"
+    escalation = conversation.escalation_reason if conversation and conversation.escalation_reason else "None"
+
+    return (
+        f"Current session: {customer.name}\n"
+        f"Phone: +{customer.wa_id}\n"
+        f"Lead status: {customer.lead_status.value}\n"
+        f"Conversation state: {conversation.state.value if conversation else 'none'}\n"
+        f"Interested cars: {interested_cars}\n"
+        f"Escalation reason: {escalation}\n"
+        f"Total messages: {len(messages)}\n"
+        f"Last message: {last_message}"
+    )
+
+
+async def switch_relay_session(staff_wa_id: str, query: str) -> str:
+    """Switch the active relay session to a different customer if the query resolves cleanly."""
+    current_session, current_customer = await get_active_session_customer(staff_wa_id)
+    if not current_session or not current_customer:
+        return "No active session."
+
+    matches = await state.list_customers(search_query=query, limit=10)
+    matches = [customer for customer in matches if customer.wa_id != current_customer.wa_id]
+
+    if not matches:
+        return f"No customers found matching '{query}'. Current session with {current_customer.name} is still active."
+
+    if len(matches) > 1:
+        lines = [f"Multiple matches for '{query}'. Current session with {current_customer.name} is still active.", ""]
+        for idx, customer in enumerate(matches, start=1):
+            cars = ", ".join(customer.interested_cars) if customer.interested_cars else "browsing"
+            lines.append(
+                f"{idx}. {customer.name} - {cars} ({customer.lead_status.value.upper()})"
+            )
+        return "\n".join(lines)
+
+    next_customer = matches[0]
+    closed, close_message = await close_relay(staff_wa_id)
+    if not closed:
+        return close_message
+
+    session, open_message = await open_relay(staff_wa_id, next_customer.wa_id)
+    if not session:
+        return open_message
+
+    return f"{close_message}\n\n{open_message}"
+
+
+# ---------------------------------------------------------------------------
 # Message forwarding
 # ---------------------------------------------------------------------------
 

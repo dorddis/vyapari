@@ -129,7 +129,25 @@ async def tool_get_stats(period: str = "today") -> str:
 
 
 async def tool_assign_lead(customer_identifier: str, staff_identifier: str) -> str:
-    """Assign a lead to a specific staff member."""
+    """Assign a lead to a specific staff member.
+
+    Use this tool when:
+    - the owner wants a named lead to be handled by a named staff member
+
+    Do not use this tool when:
+    - either the customer or staff target is still ambiguous
+
+    Before calling:
+    - resolve the exact lead and staff member
+    - if there is ambiguity, ask for the exact target first
+
+    After calling:
+    - confirm who was assigned to whom
+    - do not keep elaborating unless the owner asks a follow-up question
+
+    This tool is terminal for the current action flow:
+    - yes
+    """
     # Find customer
     customer = await state.get_customer(customer_identifier)
     if not customer:
@@ -165,11 +183,29 @@ async def tool_batch_followup(
 ) -> str:
     """Generate and send personalized follow-ups for leads.
 
+    Use this tool when:
+    - the owner explicitly wants a batch follow-up action for a defined date or lead segment
+
+    Do not use this tool when:
+    - the owner has not clearly confirmed a batch outbound action
+    - the request is only about inspecting leads, not messaging them
+
+    Before calling:
+    - confirm the target date or cohort with the owner
+    - make it clear this is a batch action affecting multiple leads
+
+    After calling:
+    - confirm how many follow-ups are ready or queued
+    - stop the current action flow unless the owner asks for another outbound action
+
     Loads each customer's conversation history, generates a personalized
     follow-up, and sends it. Uses template if outside 24hr window.
 
     For now: returns what WOULD be sent. Actual LLM generation + sending
     will be wired when the agents are running.
+
+    This tool is terminal for the current action flow:
+    - yes
     """
     statuses = [LeadStatus(s.strip()) for s in status_filter.split(",") if s.strip() in LeadStatus.__members__]
     if not statuses:

@@ -199,9 +199,18 @@ async def handle_relay_forward(msg: IncomingMessage, target_wa_id: str) -> str |
 
 
 async def handle_relay_command(msg: IncomingMessage, target_wa_id: str) -> str:
-    """Fullstack 1 fills this in — parses /done, /switch, /number, etc."""
+    """Relay commands for the active staff session."""
+    from services.relay import (
+        get_relay_customer_number,
+        get_relay_status,
+        get_session_context,
+        switch_relay_session,
+    )
+
     text = (msg.text or "").strip()
     cmd = text.split()[0].lower() if text else ""
+    args = text.split(maxsplit=1)
+    arg_text = args[1].strip() if len(args) > 1 else ""
 
     if cmd == f"{config.COMMAND_PREFIX}done":
         session = await state.close_relay_session(msg.wa_id)
@@ -223,6 +232,20 @@ async def handle_relay_command(msg: IncomingMessage, target_wa_id: str) -> str:
             f"  {config.COMMAND_PREFIX}wrap - Save session context\n"
             f"  {config.COMMAND_PREFIX}help - This message"
         )
+
+    if cmd == f"{config.COMMAND_PREFIX}number":
+        return await get_relay_customer_number(msg.wa_id)
+
+    if cmd == f"{config.COMMAND_PREFIX}status":
+        return await get_relay_status(msg.wa_id)
+
+    if cmd == f"{config.COMMAND_PREFIX}summary":
+        return await get_session_context(target_wa_id)
+
+    if cmd == f"{config.COMMAND_PREFIX}switch":
+        if not arg_text:
+            return f"Usage: {config.COMMAND_PREFIX}switch [customer name or car query]"
+        return await switch_relay_session(msg.wa_id, arg_text)
 
     return f"Unknown command: {cmd}. Type {config.COMMAND_PREFIX}help for available commands."
 
@@ -249,18 +272,17 @@ async def dispatch(msg: IncomingMessage) -> str | None:
         return None
     await state.mark_message_processed(msg.msg_id)
 
-    # Ensure customer/conversation records exist
-    customer = await state.get_or_create_customer(
-        msg.wa_id, name=msg.sender_name
-    )
-    conversation = await state.get_or_create_conversation(msg.wa_id)
-
     # Route
     decision = await route_message(msg)
     log.info(
         f"Routed {msg.wa_id} -> {decision.action.value} "
         f"(role={decision.role}, state={decision.conversation_state})"
     )
+
+    # Only customer-originated traffic should create customer conversation state.
+    if decision.role == "customer":
+        await state.get_or_create_customer(msg.wa_id, name=msg.sender_name)
+        await state.get_or_create_conversation(msg.wa_id)
 
     # Dispatch to handler
     match decision.action:

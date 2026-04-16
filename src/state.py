@@ -19,6 +19,7 @@ from models import (
     MessageRecord,
     MessageRole,
     MessageType,
+    PendingOwnerActionRecord,
     RelaySessionRecord,
     RelaySessionStatus,
     StaffRecord,
@@ -35,6 +36,7 @@ _conversations: dict[str, ConversationRecord] = {}  # keyed by customer_wa_id
 _messages: dict[str, list[MessageRecord]] = {}  # keyed by conversation_id
 _relay_sessions: dict[str, RelaySessionRecord] = {}  # keyed by staff_wa_id
 _escalations: dict[str, list[EscalationRecord]] = {}  # keyed by conversation_id
+_pending_owner_actions: dict[str, PendingOwnerActionRecord] = {}  # keyed by staff_wa_id
 _processed_msg_ids: set[str] = set()  # for webhook idempotency
 
 # Per-conversation locks to prevent race conditions
@@ -391,6 +393,36 @@ async def add_escalation(
 
 
 # ---------------------------------------------------------------------------
+# Pending owner actions
+# ---------------------------------------------------------------------------
+
+async def get_pending_owner_action(staff_wa_id: str) -> PendingOwnerActionRecord | None:
+    return _pending_owner_actions.get(staff_wa_id)
+
+
+async def set_pending_owner_action(
+    staff_wa_id: str,
+    action_name: str,
+    payload: dict,
+    summary: str,
+    confirmation_prompt: str,
+) -> PendingOwnerActionRecord:
+    record = PendingOwnerActionRecord(
+        staff_wa_id=staff_wa_id,
+        action_name=action_name,
+        payload=payload,
+        summary=summary,
+        confirmation_prompt=confirmation_prompt,
+    )
+    _pending_owner_actions[staff_wa_id] = record
+    return record
+
+
+async def clear_pending_owner_action(staff_wa_id: str) -> None:
+    _pending_owner_actions.pop(staff_wa_id, None)
+
+
+# ---------------------------------------------------------------------------
 # Initialization
 # ---------------------------------------------------------------------------
 
@@ -413,5 +445,6 @@ async def reset_state() -> None:
     _messages.clear()
     _relay_sessions.clear()
     _escalations.clear()
+    _pending_owner_actions.clear()
     _processed_msg_ids.clear()
     _locks.clear()
