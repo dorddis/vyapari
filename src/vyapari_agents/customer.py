@@ -314,7 +314,7 @@ async def run_customer_agent(
 
     # Update interested cars from context (tools may have mutated it)
     if ctx.interested_cars != customer.interested_cars:
-        customer.interested_cars = ctx.interested_cars
+        await state.update_customer_interested_cars(wa_id, ctx.interested_cars)
 
     return AgentResponse(
         text=reply,

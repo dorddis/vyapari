@@ -330,6 +330,14 @@ async def update_lead_status(wa_id: str, status: LeadStatus) -> None:
             await s.commit()
 
 
+async def update_customer_interested_cars(wa_id: str, cars: list[str]) -> None:
+    async with _session() as s:
+        row = await s.get(M.Customer, wa_id)
+        if row:
+            row.interested_cars = cars
+            await s.commit()
+
+
 async def list_customers(
     status_filter: list[LeadStatus] | None = None,
     search_query: str | None = None,
