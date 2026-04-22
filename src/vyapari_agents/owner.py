@@ -290,9 +290,16 @@ sdr_agent = Agent[StaffContext](
 # ---------------------------------------------------------------------------
 
 async def run_owner_agent(
-    wa_id: str, message: str, image_url: str | None = None
+    wa_id: str,
+    message: str,
+    image_url: str | None = None,
+    *,
+    business_id: str,
 ) -> str:
-    """Run the Owner Agent for a single message turn."""
+    """Run the Owner Agent for a single message turn.
+
+    `business_id` is required — see StaffContext for the reasoning.
+    """
     from models import MessageRole
 
     staff = await state.get_staff(wa_id)
@@ -303,6 +310,7 @@ async def run_owner_agent(
 
     ctx = StaffContext(
         staff_id=wa_id,
+        business_id=business_id,
         name=staff.name,
         role=staff.role.value,
         has_active_relay=relay is not None,

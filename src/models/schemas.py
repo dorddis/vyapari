@@ -28,6 +28,12 @@ class IncomingMessage(BaseModel):
     msg_id: str = Field(..., description="Channel-specific message ID for dedup and read receipts")
     msg_type: MessageType = Field(default=MessageType.TEXT)
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    # Tenant the message belongs to. Populated at the webhook / API entry
+    # point after resolving from phone_number_id (WhatsApp) or API key /
+    # request context (web clone). Empty string means "not yet resolved"
+    # — legitimate only in test fixtures and during the Phase-3 migration
+    # window; by end of P3.3 this is required everywhere.
+    business_id: str = Field(default="")
     # Optional media fields
     media_id: str | None = None
     media_url: str | None = None

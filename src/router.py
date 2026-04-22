@@ -145,7 +145,12 @@ async def handle_customer_agent(msg: IncomingMessage, conv_state: ConversationSt
             return "Sorry, I'm having trouble right now. Please try again!"
 
     from vyapari_agents.customer import run_customer_agent
-    response = await run_customer_agent(msg.wa_id, msg.text or "", image_url=msg.media_url)
+    response = await run_customer_agent(
+        msg.wa_id,
+        msg.text or "",
+        image_url=msg.media_url,
+        business_id=msg.business_id,
+    )
 
     # Send car images referenced in the reply
     if response.images:
@@ -218,7 +223,12 @@ async def handle_owner_agent(msg: IncomingMessage, staff_name: str | None) -> st
             return "Sorry, something went wrong."
 
     from vyapari_agents.owner import run_owner_agent
-    return await run_owner_agent(msg.wa_id, msg.text or "", image_url=msg.media_url)
+    return await run_owner_agent(
+        msg.wa_id,
+        msg.text or "",
+        image_url=msg.media_url,
+        business_id=msg.business_id,
+    )
 
 
 async def handle_sdr_agent(msg: IncomingMessage, staff_name: str | None) -> str:
@@ -227,7 +237,12 @@ async def handle_sdr_agent(msg: IncomingMessage, staff_name: str | None) -> str:
         return "SDR agent requires OpenAI. Set OPENAI_API_KEY in .env."
 
     from vyapari_agents.owner import run_owner_agent
-    return await run_owner_agent(msg.wa_id, msg.text or "", image_url=msg.media_url)
+    return await run_owner_agent(
+        msg.wa_id,
+        msg.text or "",
+        image_url=msg.media_url,
+        business_id=msg.business_id,
+    )
 
 
 async def handle_relay_forward(msg: IncomingMessage, target_wa_id: str) -> str | None:
@@ -317,11 +332,12 @@ async def dispatch(msg: IncomingMessage) -> str | None:
         # BEFORE the agent dispatch below — even a crashing agent must not
         # lose the window signal, since the window ultimately belongs to
         # Meta's billing, not our own logic.
-        try:
-            from services.outbound import touch_inbound
-            await touch_inbound(config.DEFAULT_BUSINESS_ID, msg.wa_id)
-        except Exception:
-            log.warning("touch_inbound failed for %s", msg.wa_id, exc_info=True)
+        if msg.business_id:
+            try:
+                from services.outbound import touch_inbound
+                await touch_inbound(msg.business_id, msg.wa_id)
+            except Exception:
+                log.warning("touch_inbound failed for %s", msg.wa_id, exc_info=True)
     log.info(
         f"Routed {msg.wa_id} -> {decision.action.value} "
         f"(role={decision.role}, state={decision.conversation_state})"

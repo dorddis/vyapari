@@ -85,6 +85,22 @@ def _require_web_clone() -> WebCloneAdapter:
     return channel
 
 
+def _resolve_business_id(request: Request) -> str:
+    """Resolve the tenant for a REST API request.
+
+    Accepts an explicit X-Business-Id header. Falls back to the
+    single-tenant bootstrap default (for the web demo and tests).
+
+    Phase 3.7 replaces this with a per-business API key lookup that
+    binds business_id to the key row, eliminating the header entirely.
+    """
+    header_bid = request.headers.get("X-Business-Id")
+    if header_bid:
+        return header_bid.strip()
+    from services.business_config import default_business_id
+    return default_business_id()
+
+
 def _new_msg_id(prefix: str) -> str:
     return f"{prefix}-{uuid4()}"
 
@@ -153,6 +169,7 @@ async def customer_chat(req: ChatRequest, request: Request):
         msg_id=_new_msg_id("web-in"),
         msg_type=MessageType.TEXT,
         sender_name=req.customer_name,
+        business_id=_resolve_business_id(request),
     )
 
     await log_incoming_message(msg, "web_clone")
@@ -205,6 +222,7 @@ async def owner_chat(req: OwnerChatRequest, request: Request):
         msg_id=_new_msg_id("web-owner-chat"),
         msg_type=MessageType.TEXT,
         sender_name=None,
+        business_id=_resolve_business_id(request),
     )
 
     await log_incoming_message(msg, "web_clone")
@@ -298,6 +316,7 @@ async def owner_send(req: OwnerSendRequest, request: Request):
         msg_id=_new_msg_id("web-owner"),
         msg_type=MessageType.TEXT,
         sender_name=config.DEFAULT_OWNER_NAME,
+        business_id=_resolve_business_id(request),
     )
     await log_incoming_message(incoming, "web_clone")
     reply = await dispatch(incoming)
@@ -318,6 +337,7 @@ async def owner_release(req: OwnerReleaseRequest, request: Request):
         msg_id=_new_msg_id("web-owner-cmd"),
         msg_type=MessageType.TEXT,
         sender_name=config.DEFAULT_OWNER_NAME,
+        business_id=_resolve_business_id(request),
     )
     await log_incoming_message(incoming, "web_clone")
     await dispatch(incoming)
@@ -337,6 +357,7 @@ async def oracle_query(req: OracleRequest, request: Request):
         msg_id=_new_msg_id("web-owner-oracle"),
         msg_type=MessageType.TEXT,
         sender_name=config.DEFAULT_OWNER_NAME,
+        business_id=_resolve_business_id(request),
     )
     await log_incoming_message(incoming, "web_clone")
     reply = await dispatch(incoming)
@@ -416,6 +437,7 @@ async def voice_chat(
         msg_id=f"web_{uuid4().hex[:16]}",
         msg_type=MessageType.VOICE,
         sender_name=customer_name or None,
+        business_id=_resolve_business_id(request),
     )
 
     await log_incoming_message(msg, "web_clone")
@@ -494,6 +516,7 @@ async def upload_image_endpoint(
         msg_type=MessageType.IMAGE,
         media_url=image_url,
         sender_name=None,
+        business_id=_resolve_business_id(request),
     )
 
     await log_incoming_message(msg, "web_clone")

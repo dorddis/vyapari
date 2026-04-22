@@ -12,8 +12,15 @@ from dataclasses import dataclass, field
 
 @dataclass
 class CustomerContext:
-    """Per-customer context injected into the Customer Agent."""
+    """Per-customer context injected into the Customer Agent.
+
+    `business_id` is required — it carries the tenant the agent is
+    running for, so every tool that reads state scopes its DB queries
+    correctly. Phase 3 made this required; earlier drafts had a
+    hardcoded "demo-sharma-motors" default that quietly crossed tenants.
+    """
     customer_id: str  # wa_id
+    business_id: str
     name: str = "Customer"
     phone: str = ""
     lead_status: str = "new"
@@ -21,16 +28,15 @@ class CustomerContext:
     conversation_state: str = "active"
     conversation_id: str = ""
     source: str | None = None  # which reel/link they came from
-    business_id: str = "demo-sharma-motors"
 
 
 @dataclass
 class StaffContext:
     """Per-staff context injected into the Owner/SDR Agent."""
     staff_id: str  # wa_id
+    business_id: str  # required — see CustomerContext for rationale
     name: str = "Staff"
     role: str = "owner"  # "owner" or "sdr"
-    business_id: str = "demo-sharma-motors"
     has_active_relay: bool = False
     active_relay_customer: str | None = None  # customer wa_id if in relay
 

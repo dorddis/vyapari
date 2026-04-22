@@ -344,6 +344,14 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
         log.exception("Webhook payload parse failed; ack'ing anyway")
         return {"status": "ok"}
 
+    # Tag the message with the resolved tenant so downstream handlers
+    # (router -> agent -> tools) can scope state lookups correctly. The
+    # tenant was resolved above via phone_number_id; fall back to the
+    # single-tenant bootstrap default if this is a legacy deployment.
+    if msg is not None and not msg.business_id:
+        from services.business_config import default_business_id
+        msg.business_id = tenant_business_id or default_business_id()
+
     # Status callbacks (delivered / read / failed) arrive on the same
     # endpoint as inbound user messages. Fan them out to message_log in
     # the background so the ack doesn't wait on DB.

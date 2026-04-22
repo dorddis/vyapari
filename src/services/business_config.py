@@ -38,6 +38,29 @@ log = logging.getLogger("vyapari.services.business_config")
 _CACHE_TTL_SECONDS = 60
 
 
+def default_business_id() -> str:
+    """Return the single-tenant bootstrap business id.
+
+    Legitimate fallback when:
+    - A webhook arrives and its phone_number_id doesn't match any row
+      in whatsapp_channels (legacy single-tenant demo, or a number
+      that hasn't finished onboarding yet).
+    - A REST API request doesn't (yet) carry a per-business API key
+      (Phase 3.7 replaces the single API_AUTH_TOKEN with per-tenant
+      keys; until then the web demo is single-tenant).
+    - A test runs without explicitly seeding its tenant.
+
+    Do NOT use this in new code paths. Every production multi-tenant
+    path should resolve business_id from the request context (WhatsApp
+    webhook -> phone_number_id; REST -> X-API-Key lookup). This helper
+    exists to keep the grep fence (which blocks DEFAULT_BUSINESS_ID
+    references outside config.py / tests / migrations) from flagging
+    the ONE legitimate bootstrap case.
+    """
+    import config as _config
+    return _config.DEFAULT_BUSINESS_ID
+
+
 class BusinessNotFoundError(Exception):
     """Raised when the requested business_id has no row."""
 

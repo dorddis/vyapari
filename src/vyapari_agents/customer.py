@@ -211,13 +211,19 @@ customer_agent = Agent[CustomerContext](
 # ---------------------------------------------------------------------------
 
 async def run_customer_agent(
-    wa_id: str, message: str, image_url: str | None = None
+    wa_id: str,
+    message: str,
+    image_url: str | None = None,
+    *,
+    business_id: str,
 ) -> AgentResponse:
     """Run the Customer Agent for a single message turn.
 
     Manages session loading, context creation, post-run image extraction,
     and escalation detection. Returns AgentResponse with text + extras.
     If image_url is provided, it's included in the user message for vision tools.
+
+    `business_id` is required — see CustomerContext for the reasoning.
     """
     # Load customer + conversation state
     customer = await state.get_or_create_customer(wa_id)
@@ -226,6 +232,7 @@ async def run_customer_agent(
     # Build context
     ctx = CustomerContext(
         customer_id=wa_id,
+        business_id=business_id,
         name=customer.name,
         phone=wa_id,
         lead_status=customer.lead_status.value,
