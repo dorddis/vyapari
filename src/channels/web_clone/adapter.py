@@ -270,8 +270,10 @@ class WebCloneAdapter(ChannelAdapter):
         )
         return msg_id
 
-    async def send_typing(self, to: str) -> None:
-        # Enqueue a typing indicator the frontend can render
+    async def send_typing(self, to: str, replying_to_msg_id: str | None = None) -> None:
+        # Web clone ignores replying_to_msg_id — Meta's Cloud API uses it
+        # to key typing indicators off an inbound message; the frontend
+        # poller just renders a typing dot.
         _enqueue(to, "typing", {})
 
     async def mark_read(self, msg_id: str) -> None:

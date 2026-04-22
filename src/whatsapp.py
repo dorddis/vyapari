@@ -1,6 +1,7 @@
 """WhatsApp Cloud API client - send and receive messages."""
 
 import logging
+import re
 from urllib.parse import urlparse
 
 import httpx
@@ -117,6 +118,9 @@ async def send_audio(to: str, media_id: str | None = None, link: str | None = No
         return resp.json()
 
 
+_MIME_FORMAT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9!#$&.+\-^_]*/[A-Za-z0-9!#$&.+\-^_]+(\s*;\s*[A-Za-z0-9!#$&.+\-^_]+=[A-Za-z0-9!#$&.+\-^_]+)*$")
+
+
 async def upload_media(
     file_bytes: bytes,
     mime_type: str,
@@ -129,6 +133,10 @@ async def upload_media(
     """
     if not file_bytes:
         raise ValueError("upload_media called with empty bytes")
+    if not _MIME_FORMAT_RE.match(mime_type):
+        # Reject anything that looks injected (e.g. "../etc/passwd") before
+        # we embed it in multipart form fields and the filename header.
+        raise ValueError(f"upload_media: invalid mime_type format: {mime_type!r}")
 
     files = {"file": (filename, file_bytes, mime_type)}
     data = {

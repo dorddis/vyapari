@@ -104,8 +104,13 @@ class ChannelAdapter(ABC):
     # --- Indicators ---
 
     @abstractmethod
-    async def send_typing(self, to: str) -> None:
-        """Show typing indicator (up to 25s on WhatsApp)."""
+    async def send_typing(self, to: str, replying_to_msg_id: str | None = None) -> None:
+        """Show typing indicator (up to 25s on WhatsApp).
+
+        `replying_to_msg_id` is required by the WhatsApp Cloud API v21+
+        typing_indicator endpoint (it keys off the inbound message_id).
+        Channels that don't use it (web_clone) can ignore the argument.
+        """
         ...
 
     @abstractmethod

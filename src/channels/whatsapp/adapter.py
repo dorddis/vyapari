@@ -30,23 +30,37 @@ def _extract_response_msg_id(response: dict) -> str:
 class WhatsAppAdapter(ChannelAdapter):
     """Adapter that talks to WhatsApp Cloud API."""
 
-    async def send_text(self, to: str, text: str) -> str:
-        response = await legacy_send_text(to, text)
-        external_msg_id = _extract_response_msg_id(response)
-        role = "bot"
+    async def _resolve_outbound_role(self, to: str) -> str:
+        """Return the logical sender role for a message we're about to send.
+
+        Default is 'bot'. If the customer has an active relay session, the
+        role reflects the staff on the other end (owner/sdr) so message
+        logs distinguish agent replies from human hijacks.
+
+        DB lookups are best-effort. A DB outage or schema mismatch falls
+        back to 'bot' with a warning (previously masked as silent success).
+        """
         try:
             import state
             from models import StaffRole
 
             relay = await state.get_active_relay_for_customer(to)
-            if relay:
-                staff = await state.get_staff(relay.staff_wa_id)
-                if staff and staff.role == StaffRole.OWNER:
-                    role = "owner"
-                elif staff and staff.role == StaffRole.SDR:
-                    role = "sdr"
+            if not relay:
+                return "bot"
+            staff = await state.get_staff(relay.staff_wa_id)
+            if staff and staff.role == StaffRole.OWNER:
+                return "owner"
+            if staff and staff.role == StaffRole.SDR:
+                return "sdr"
+            return "bot"
         except Exception:
-            role = "bot"
+            log.warning("Role resolution failed for %s; defaulting to 'bot'", to, exc_info=True)
+            return "bot"
+
+    async def send_text(self, to: str, text: str) -> str:
+        response = await legacy_send_text(to, text)
+        external_msg_id = _extract_response_msg_id(response)
+        role = await self._resolve_outbound_role(to)
 
         await log_message(
             wa_id=to,
@@ -62,20 +76,7 @@ class WhatsAppAdapter(ChannelAdapter):
     async def send_image(self, to: str, image_url: str, caption: str = "") -> str:
         response = await legacy_send_image(to, image_url, caption)
         external_msg_id = _extract_response_msg_id(response)
-        role = "bot"
-        try:
-            import state
-            from models import StaffRole
-
-            relay = await state.get_active_relay_for_customer(to)
-            if relay:
-                staff = await state.get_staff(relay.staff_wa_id)
-                if staff and staff.role == StaffRole.OWNER:
-                    role = "owner"
-                elif staff and staff.role == StaffRole.SDR:
-                    role = "sdr"
-        except Exception:
-            role = "bot"
+        role = await self._resolve_outbound_role(to)
 
         await log_message(
             wa_id=to,
@@ -183,8 +184,11 @@ class WhatsAppAdapter(ChannelAdapter):
             text = f"{text}: {params_text}"
         return await self.send_text(to, text)
 
-    async def send_typing(self, to: str) -> None:
-        # Typing indicator via Graph API can be added later.
+    async def send_typing(self, to: str, replying_to_msg_id: str | None = None) -> None:
+        # Cloud API v21 typing indicators POST to the messages endpoint
+        # with {"status":"read", "message_id": <wamid>, "typing_indicator":
+        # {"type":"text"}}. Wiring that up is a Phase 1 task (needs
+        # main.py to thread msg.msg_id through). For now, no-op.
         return None
 
     async def mark_read(self, msg_id: str) -> None:
@@ -266,7 +270,9 @@ class WhatsAppAdapter(ChannelAdapter):
         if msg_type_raw == "audio":
             audio = msg.get("audio") or {}
             # Voice notes carry `voice: true`; plain audio uploads don't.
-            is_voice = bool(audio.get("voice"))
+            # Use `is True` (not bool()) so a stringly-typed "false" from
+            # a future Meta schema change doesn't misroute to the voice path.
+            is_voice = audio.get("voice") is True
             return IncomingMessage(
                 wa_id=wa_id,
                 text=None,
