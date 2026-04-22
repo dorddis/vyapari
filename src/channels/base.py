@@ -154,58 +154,35 @@ _active_adapter: ChannelAdapter | None = None
 _per_business_adapters: dict[str, ChannelAdapter] = {}
 
 
-def get_channel(business_id: str | None = None) -> ChannelAdapter:
-    """Return the active channel adapter.
+def get_channel() -> ChannelAdapter:
+    """Return the active channel adapter (singleton).
 
-    For web_clone mode: singleton, shared across tenants (the web demo
-    is inherently single-tenant).
+    For web_clone mode: one WebCloneAdapter shared across tenants (the
+    web demo is inherently single-tenant).
 
-    For whatsapp mode with `business_id`: returns (or constructs + caches)
-    a tenant-bound WhatsAppAdapter carrying that business's
-    access_token and phone_number_id. Callers that don't pass
-    business_id get the unbound singleton, which falls back to the
-    module-level env values (legacy single-tenant behavior).
+    For whatsapp mode: the UNBOUND WhatsAppAdapter that falls back to
+    the module-level env `WHATSAPP_ACCESS_TOKEN` + `WHATSAPP_PHONE_NUMBER_ID`.
+    This is the legacy single-tenant path — any multi-tenant caller MUST
+    use `await get_tenant_channel(business_id)` instead to pick up that
+    tenant's credentials.
 
-    Call `invalidate_channel(business_id)` after mutating a tenant's
-    provider_config to force a fresh adapter on the next call.
+    Note: the earlier sync signature of this function accepted a
+    `business_id` arg that would warn-and-fallback to the unbound
+    adapter. That was a silent tenant-crossover footgun — a caller who
+    forgot to await `get_tenant_channel` would get a warning and the
+    wrong tenant's creds. It's now removed; use `get_tenant_channel`.
     """
     global _active_adapter
     from config import CHANNEL_MODE
 
+    if _active_adapter is not None:
+        return _active_adapter
+
     if CHANNEL_MODE == "web_clone":
-        if _active_adapter is None:
-            from channels.web_clone.adapter import WebCloneAdapter
-            _active_adapter = WebCloneAdapter()
-        return _active_adapter
-
-    # whatsapp mode
-    from channels.whatsapp.adapter import WhatsAppAdapter
-
-    if business_id is None:
-        # Legacy unbound adapter (falls back to env creds)
-        if _active_adapter is None:
-            _active_adapter = WhatsAppAdapter()
-        return _active_adapter
-
-    cached = _per_business_adapters.get(business_id)
-    if cached is not None:
-        return cached
-
-    # Build a fresh tenant-bound adapter. This is sync — we can't await
-    # the business_config loader here, so callers that need tenant-bound
-    # adapters must pre-construct via `construct_whatsapp_channel(...)`
-    # (async) or fall back to the unbound path. For now we return the
-    # unbound singleton and log; Phase 3 multi-tenant call sites that
-    # need per-tenant outbound should use `get_tenant_channel(biz_id)`
-    # below (async).
-    import logging
-    logging.getLogger("vyapari.channels").warning(
-        "get_channel(business_id=%s) called synchronously; falling back "
-        "to unbound adapter. Use `await get_tenant_channel(business_id)` "
-        "for proper per-tenant binding.",
-        business_id,
-    )
-    if _active_adapter is None:
+        from channels.web_clone.adapter import WebCloneAdapter
+        _active_adapter = WebCloneAdapter()
+    else:
+        from channels.whatsapp.adapter import WhatsAppAdapter
         _active_adapter = WhatsAppAdapter()
     return _active_adapter
 
@@ -215,9 +192,15 @@ async def get_tenant_channel(business_id: str) -> ChannelAdapter:
 
     Use this from request-scoped code (webhook handler, agent tool runs)
     that knows the tenant. Caches per business_id.
+
+    Empty / None business_id falls back to the unbound adapter — this
+    is the legacy single-tenant path (web_clone demo, pre-P3 callers).
     """
     from config import CHANNEL_MODE
     if CHANNEL_MODE != "whatsapp":
+        return get_channel()
+
+    if not business_id:
         return get_channel()
 
     cached = _per_business_adapters.get(business_id)

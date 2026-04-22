@@ -47,7 +47,7 @@ from urllib.parse import urlparse
 
 from sqlalchemy import select
 
-from channels.base import get_channel
+from channels.base import get_tenant_channel
 from database import get_session_factory
 from db_models import Customer
 from services.templates import get_approved_template
@@ -211,7 +211,9 @@ async def send_template_reply(
     if tmpl is None:
         raise TemplateNotApprovedError(business_id, template_name, language)
 
-    channel = get_channel()
+    # Tenant-bound adapter (P3.11): outbound uses THIS business's access
+    # token, not the deployment-wide env default.
+    channel = await get_tenant_channel(business_id)
     return await channel.send_template(
         to=customer_wa_id,
         template_name=template_name,
@@ -247,7 +249,7 @@ async def send_reply(
     params describe what to send instead, not what to add to `text`.
     """
     if await is_within_24h_window(business_id, customer_wa_id):
-        channel = get_channel()
+        channel = await get_tenant_channel(business_id)
         return await channel.send_text(customer_wa_id, text)
 
     if fallback_template is None:

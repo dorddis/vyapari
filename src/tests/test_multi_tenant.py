@@ -254,3 +254,100 @@ async def test_pnid_resolves_to_correct_tenant(two_tenants) -> None:
     assert await resolve_business_id_from_phone_number_id("pni-alpha") == two_tenants["a_id"]
     assert await resolve_business_id_from_phone_number_id("pni-beta") == two_tenants["b_id"]
     assert await resolve_business_id_from_phone_number_id("pni-unknown") is None
+
+
+# ---------------------------------------------------------------------------
+# Dispatcher integration: send_reply + send_template_reply pick the RIGHT
+# tenant-bound adapter. Without this, Phase 3 ships with outbound silently
+# going through env credentials for every tenant (the bug P3.11 fixes).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_send_reply_uses_tenant_bound_adapter(two_tenants, monkeypatch) -> None:
+    """send_reply(business_id=A) must POST with TOKEN_ALPHA;
+    send_reply(business_id=B) must POST with TOKEN_BETA. Previously
+    services/outbound.py called `get_channel()` (unbound) even though
+    business_id was in scope. P3.11 switched it to `get_tenant_channel`.
+    """
+    import config
+    monkeypatch.setattr(config, "CHANNEL_MODE", "whatsapp")
+
+    async def _noop_log(**kw):
+        return None
+
+    async def _bot_role(self, to):
+        return "bot"
+
+    monkeypatch.setattr("channels.whatsapp.adapter.log_message", _noop_log)
+    monkeypatch.setattr(WhatsAppAdapter, "_resolve_outbound_role", _bot_role)
+
+    # Prime the window so send_reply goes through the session-text path
+    # (the one we care about for tenant-binding — template path exercised
+    # in the test below). Customer rows must exist before touch_inbound
+    # can record the timestamp.
+    from services.outbound import send_reply, touch_inbound
+    import state
+    cust_a = "919100000011"
+    cust_b = "919200000022"
+    await state.get_or_create_customer(cust_a, business_id=two_tenants["a_id"])
+    await state.get_or_create_customer(cust_b, business_id=two_tenants["b_id"])
+    await touch_inbound(two_tenants["a_id"], cust_a)
+    await touch_inbound(two_tenants["b_id"], cust_b)
+
+    caps = [_Captor(), _Captor()]
+    caps_iter = iter(caps)
+    with patch("whatsapp.httpx.AsyncClient", lambda: next(caps_iter)):
+        await send_reply(two_tenants["a_id"], cust_a, "hi from alpha")
+        await send_reply(two_tenants["b_id"], cust_b, "hi from beta")
+
+    # Flatten all recorded calls; identify by the `to` field.
+    all_calls = [c for cap in caps for c in cap.calls]
+    a_call = next(c for c in all_calls if c["json"]["to"] == cust_a)
+    b_call = next(c for c in all_calls if c["json"]["to"] == cust_b)
+    assert "TOKEN_ALPHA" in a_call["auth"]
+    assert "TOKEN_BETA" in b_call["auth"]
+    assert "pni-alpha" in a_call["url"]
+    assert "pni-beta" in b_call["url"]
+
+
+@pytest.mark.asyncio
+async def test_send_template_reply_uses_tenant_bound_adapter(
+    two_tenants, monkeypatch,
+) -> None:
+    """Same guarantee for the template path."""
+    import config
+    monkeypatch.setattr(config, "CHANNEL_MODE", "whatsapp")
+
+    async def _noop_log(**kw):
+        return None
+
+    async def _bot_role(self, to):
+        return "bot"
+
+    monkeypatch.setattr("channels.whatsapp.adapter.log_message", _noop_log)
+    monkeypatch.setattr(WhatsAppAdapter, "_resolve_outbound_role", _bot_role)
+
+    # Seed APPROVED templates for both tenants
+    from services.templates import _upsert_from_meta
+    for biz in (two_tenants["a_id"], two_tenants["b_id"]):
+        await _upsert_from_meta(biz, {
+            "id": f"t-{biz}", "name": "followup_24h", "language": "en",
+            "status": "APPROVED", "category": "UTILITY", "components": [],
+        })
+
+    from services.outbound import send_template_reply
+    caps = [_Captor(), _Captor()]
+    caps_iter = iter(caps)
+    with patch("whatsapp.httpx.AsyncClient", lambda: next(caps_iter)):
+        await send_template_reply(
+            two_tenants["a_id"], "919100000031", "followup_24h", ["Rahul"],
+        )
+        await send_template_reply(
+            two_tenants["b_id"], "919200000032", "followup_24h", ["Ramesh"],
+        )
+
+    all_calls = [c for cap in caps for c in cap.calls]
+    a_call = next(c for c in all_calls if c["json"]["to"] == "919100000031")
+    b_call = next(c for c in all_calls if c["json"]["to"] == "919200000032")
+    assert "TOKEN_ALPHA" in a_call["auth"]
+    assert "TOKEN_BETA" in b_call["auth"]

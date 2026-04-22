@@ -86,6 +86,14 @@ async def mint_api_key(
     )
 
 
+# Throttle the last_used_at UPDATE. A key hammered at 100 req/sec would
+# otherwise generate 100 row UPDATEs per second, creating write-lock
+# contention with zero analytical value. One bump per minute is enough
+# for audit ("when was this key last active"), and collapses the write
+# amplification to 1 UPDATE/min/key max.
+_LAST_USED_BUMP_INTERVAL_SECONDS = 60
+
+
 async def verify_api_key(plaintext: str) -> str | None:
     """Return the business_id bound to `plaintext` if valid + un-revoked.
 
@@ -93,7 +101,9 @@ async def verify_api_key(plaintext: str) -> str | None:
     - The key hash doesn't match any row.
     - The matching row is revoked.
 
-    Updates `last_used_at` on success for ops + audit.
+    Updates `last_used_at` at most once per 60s per key — enough for
+    "when was this key last active" analytics without hot-row contention
+    under burst traffic.
     """
     if not plaintext:
         return None
@@ -105,14 +115,20 @@ async def verify_api_key(plaintext: str) -> str | None:
         row = (await session.execute(stmt)).scalar_one_or_none()
         if row is None or row.revoked_at is not None:
             return None
-        # Bump last_used_at. Best-effort — a concurrent revocation race
-        # doesn't matter here because the read above is already committed.
-        await session.execute(
-            update(ApiKey)
-            .where(ApiKey.id == row.id)
-            .values(last_used_at=datetime.now(timezone.utc))
-        )
-        await session.commit()
+
+        # Only bump last_used_at if the stored value is older than our
+        # throttle interval. One UPDATE per 60s per key, worst case.
+        now = datetime.now(timezone.utc)
+        last = row.last_used_at
+        if last is not None and last.tzinfo is None:
+            last = last.replace(tzinfo=timezone.utc)
+        if last is None or (now - last).total_seconds() >= _LAST_USED_BUMP_INTERVAL_SECONDS:
+            await session.execute(
+                update(ApiKey)
+                .where(ApiKey.id == row.id)
+                .values(last_used_at=now)
+            )
+            await session.commit()
         return row.business_id
 
 

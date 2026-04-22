@@ -26,7 +26,8 @@ def _wipe_l1_cache():
 
 @pytest.mark.asyncio
 async def test_mark_and_check_same_business():
-    await state.mark_message_processed("wamid.x", business_id="biz-a")
+    first = await state.mark_message_processed("wamid.x", business_id="biz-a")
+    assert first is True
     assert await state.is_message_processed("wamid.x", business_id="biz-a") is True
 
 
@@ -47,15 +48,32 @@ async def test_is_message_processed_hits_db_without_l1_cache():
 
 
 @pytest.mark.asyncio
-async def test_mark_twice_is_noop_not_error():
+async def test_mark_twice_returns_false_on_second_call():
     """Race: two replicas mark_message_processed with the same key.
-    The second one's INSERT collides on the PK; the call must not
-    propagate an exception."""
-    await state.mark_message_processed("wamid.dup", business_id="biz-a")
-    # Clear cache so the second call doesn't short-circuit before DB.
+    The first wins (returns True); the second INSERT collides on the
+    composite PK, rolls back, and returns False so the caller knows
+    NOT to dispatch. This is the cross-replica dedup guarantee."""
+    first = await state.mark_message_processed("wamid.dup", business_id="biz-a")
+    assert first is True
+    # Clear cache so the second call must hit the DB.
     state._processed_msg_ids.clear()
-    # Must not raise.
-    await state.mark_message_processed("wamid.dup", business_id="biz-a")
+    second = await state.mark_message_processed("wamid.dup", business_id="biz-a")
+    assert second is False
+
+
+@pytest.mark.asyncio
+async def test_concurrent_mark_exactly_one_wins():
+    """Simulate two replicas marking the same wamid simultaneously via
+    asyncio.gather. Exactly one call returns True; the other returns
+    False. Prevents double-dispatch across replicas."""
+    import asyncio
+    state._processed_msg_ids.clear()
+    results = await asyncio.gather(
+        state.mark_message_processed("wamid.race", business_id="biz-a"),
+        state.mark_message_processed("wamid.race", business_id="biz-a"),
+    )
+    assert sum(1 for r in results if r) == 1, results
+    assert sum(1 for r in results if not r) == 1, results
 
 
 @pytest.mark.asyncio

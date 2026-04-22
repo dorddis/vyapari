@@ -41,6 +41,7 @@ log = logging.getLogger("vyapari")
 
 async def relay_expiry_loop():
     """Periodically check for expired relay sessions."""
+    from channels.base import get_tenant_channel
     while True:
         try:
             expired = await state.check_expired_relay_sessions()
@@ -49,7 +50,11 @@ async def relay_expiry_loop():
                 name = customer.name if customer else "Customer"
                 log.info(f"Relay session expired: {name} ({session.customer_wa_id})")
 
-                channel = get_channel()
+                # Tenant-bound adapter: the expiry notification MUST come
+                # from the tenant that owns this session, not from the env
+                # fallback. Sessions predating Phase 3.5 have no business_id
+                # and fall back to the unbound adapter.
+                channel = await get_tenant_channel(session.business_id or "")
                 await channel.send_text(
                     session.staff_wa_id,
                     f"Session with {name} auto-closed (idle timeout). Agent resumed.",
@@ -384,7 +389,11 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
 async def _process_and_reply(msg: IncomingMessage):
     """Process a message through the router and send the reply."""
     try:
-        channel = get_channel()
+        # Per-tenant adapter (P3.11): whatsapp mode resolves msg.business_id
+        # to a bound WhatsAppAdapter carrying THAT tenant's access_token +
+        # phone_number_id. web_clone mode ignores business_id (single-tenant).
+        from channels.base import get_tenant_channel
+        channel = await get_tenant_channel(msg.business_id or "")
         await channel.send_typing(msg.wa_id, msg.msg_id)
         await channel.mark_read(msg.msg_id)
 
@@ -483,7 +492,8 @@ async def _process_and_reply(msg: IncomingMessage):
     except Exception as e:
         log.error(f"Error processing {msg.wa_id}: {e}", exc_info=True)
         try:
-            channel = get_channel()
+            from channels.base import get_tenant_channel
+            channel = await get_tenant_channel(msg.business_id or "")
             await channel.send_text(
                 msg.wa_id,
                 "Sorry, I'm having trouble right now. Please try again in a moment!",

@@ -145,6 +145,7 @@ class RelaySessionRecord(BaseModel):
     staff_wa_id: str
     customer_wa_id: str
     conversation_id: str
+    business_id: str | None = None
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_active: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     status: RelaySessionStatus = RelaySessionStatus.ACTIVE

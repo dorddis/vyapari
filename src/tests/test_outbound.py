@@ -56,14 +56,21 @@ async def _clean_templates_and_seed_customer():
 def mock_channel(monkeypatch):
     """Replace the channel adapter singleton with a mock.
 
-    Returns the mock instance so tests can assert on calls.
+    Returns the mock instance so tests can assert on calls. Also clears
+    any per-business adapter cache left by other tests — `get_tenant_channel`
+    otherwise would return a cached real adapter instead of our mock.
     """
     from channels import base as base_mod
 
+    base_mod.reset_channel()
     mock = type("MockChannel", (), {})()
     mock.send_text = AsyncMock(return_value="wamid.text-1")
     mock.send_template = AsyncMock(return_value="wamid.tmpl-1")
     base_mod._active_adapter = mock
+    # Route any per-business lookup to the same mock — simplest way to
+    # keep the assertion surface (mock_channel.send_text.called) stable
+    # when the dispatcher uses get_tenant_channel(business_id).
+    base_mod._per_business_adapters[BIZ] = mock
     yield mock
     base_mod.reset_channel()
 

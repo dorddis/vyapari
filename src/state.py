@@ -193,6 +193,7 @@ def _relay_to_record(row: M.RelaySession) -> RelaySessionRecord:
         staff_wa_id=row.staff_wa_id,
         customer_wa_id=row.customer_wa_id,
         conversation_id=row.conversation_id,
+        business_id=row.business_id,
         started_at=row.started_at,
         last_active=row.last_active_at,
         status=RelaySessionStatus(row.status),
@@ -256,22 +257,19 @@ async def is_message_processed(msg_id: str, *, business_id: str | None = None) -
         return result.scalar_one_or_none() is not None
 
 
-async def mark_message_processed(msg_id: str, *, business_id: str | None = None) -> None:
-    """Record that a wamid has been dispatched.
+async def mark_message_processed(msg_id: str, *, business_id: str | None = None) -> bool:
+    """Mark a wamid as being dispatched. Returns True if WE won the
+    insert (caller should dispatch), False if another replica already
+    owns it (caller should skip).
 
-    Insert into `processed_messages`; swallow the IntegrityError if
-    another replica raced us (the row already exists with this
-    (business_id, wa_msg_id) PK — that's the exact cross-replica
-    guarantee we want).
+    This is the authoritative cross-replica dedup — the composite PK on
+    processed_messages guarantees exactly one replica wins the INSERT.
+    The L1 cache is set only on a successful commit so a failed commit
+    doesn't falsely advertise "processed" on this replica.
     """
     import time
     biz = business_id or _default_biz_for_seed()
     key = _cache_key(biz, msg_id)
-    _processed_msg_ids[key] = time.time()
-    if len(_processed_msg_ids) > _MAX_PROCESSED_IDS:
-        sorted_ids = sorted(_processed_msg_ids.items(), key=lambda x: x[1])
-        for old_id, _ in sorted_ids[: len(sorted_ids) - _MAX_PROCESSED_IDS]:
-            del _processed_msg_ids[old_id]
 
     async with _session() as s:
         try:
@@ -280,9 +278,19 @@ async def mark_message_processed(msg_id: str, *, business_id: str | None = None)
             ))
             await s.commit()
         except Exception:
-            # Race with another replica; the other insert won. That's
-            # the point of the DB-backed dedup. Rollback and continue.
+            # Another replica (or an earlier call on this one) already
+            # inserted. Rollback and signal "skip dispatch."
             await s.rollback()
+            return False
+
+    # We won. Prime the L1 cache so subsequent is_message_processed
+    # calls on this replica short-circuit.
+    _processed_msg_ids[key] = time.time()
+    if len(_processed_msg_ids) > _MAX_PROCESSED_IDS:
+        sorted_ids = sorted(_processed_msg_ids.items(), key=lambda x: x[1])
+        for old_id, _ in sorted_ids[: len(sorted_ids) - _MAX_PROCESSED_IDS]:
+            del _processed_msg_ids[old_id]
+    return True
 
 
 async def cleanup_processed_messages(older_than_hours: int = 48) -> int:

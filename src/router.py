@@ -152,10 +152,11 @@ async def handle_customer_agent(msg: IncomingMessage, conv_state: ConversationSt
         business_id=msg.business_id,
     )
 
-    # Send car images referenced in the reply
+    # Send car images referenced in the reply — tenant-bound adapter
+    # so multi-tenant deploys use the right WABA creds (P3.11).
     if response.images:
-        from channels.base import get_channel
-        channel = get_channel()
+        from channels.base import get_tenant_channel
+        channel = await get_tenant_channel(msg.business_id or "")
         for img_url in response.images:
             try:
                 await channel.send_image(msg.wa_id, img_url, caption="")
@@ -164,14 +165,16 @@ async def handle_customer_agent(msg: IncomingMessage, conv_state: ConversationSt
 
     # Push escalation notification to owner/assigned staff
     if response.is_escalation:
-        await _push_escalation_notification(msg.wa_id, response)
+        await _push_escalation_notification(msg.wa_id, response, business_id=msg.business_id)
 
     return response.text
 
 
-async def _push_escalation_notification(customer_wa_id: str, response) -> None:
+async def _push_escalation_notification(
+    customer_wa_id: str, response, *, business_id: str = "",
+) -> None:
     """Send escalation notification to the assigned staff or owner."""
-    from channels.base import get_channel
+    from channels.base import get_tenant_channel
 
     # Find who to notify: assigned staff, or owner
     conv = await state.get_conversation(customer_wa_id)
@@ -190,7 +193,7 @@ async def _push_escalation_notification(customer_wa_id: str, response) -> None:
         log.warning(f"No one to notify for escalation from {customer_wa_id}")
         return
 
-    channel = get_channel()
+    channel = await get_tenant_channel(business_id)
     notification = (
         f"ESCALATION\n"
         f"{response.escalation_summary}\n\n"
@@ -249,19 +252,19 @@ async def handle_relay_forward(msg: IncomingMessage, target_wa_id: str) -> str |
     """Forward message to the other party in the relay session.
 
     Returns None — relay is silent to the sender. The message is sent
-    to the target via the channel adapter.
+    to the target via the channel adapter (tenant-bound per P3.11).
     """
     from services.relay import forward_to_customer, forward_to_staff
-    from channels.base import get_channel
+    from channels.base import get_tenant_channel
 
     text = msg.text or ""
     role, _ = await resolve_role(msg.wa_id)
+    channel = await get_tenant_channel(msg.business_id or "")
 
     if role in ("owner", "sdr"):
         # Staff -> customer
         customer_wa_id, fwd_text = await forward_to_customer(msg.wa_id, text)
         if customer_wa_id:
-            channel = get_channel()
             await channel.send_text(customer_wa_id, fwd_text)
     else:
         # Customer -> staff
@@ -269,7 +272,6 @@ async def handle_relay_forward(msg: IncomingMessage, target_wa_id: str) -> str |
         name = customer.name if customer else "Customer"
         staff_wa_id, fwd_text = await forward_to_staff(msg.wa_id, text, name)
         if staff_wa_id:
-            channel = get_channel()
             await channel.send_text(staff_wa_id, fwd_text)
 
     return None  # no reply to sender
@@ -315,11 +317,15 @@ async def dispatch(msg: IncomingMessage) -> str | None:
     This is the single entry point called by main.py's webhook handler
     and by web_api.py's REST endpoints.
     """
-    # Idempotency check
-    if await state.is_message_processed(msg.msg_id, business_id=msg.business_id or None):
+    # Idempotency: atomic "mark-first-then-dispatch" (Phase 3.11 — closes
+    # a two-replica race where both could pass is_message_processed
+    # before either committed, and both dispatched). mark_message_processed
+    # returns True only for the replica that won the INSERT; the other
+    # one gets False and skips dispatch entirely.
+    biz = msg.business_id or None
+    if not await state.mark_message_processed(msg.msg_id, business_id=biz):
         log.info(f"Duplicate message {msg.msg_id}, skipping")
         return None
-    await state.mark_message_processed(msg.msg_id, business_id=msg.business_id or None)
 
     # Route first, THEN create records only for customers (not staff)
     decision = await route_message(msg)
