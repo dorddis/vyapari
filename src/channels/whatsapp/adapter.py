@@ -342,8 +342,7 @@ class WhatsAppAdapter(ChannelAdapter):
 
         Returns None for:
         - Non-message payloads (status updates, system events, malformed)
-        - Message types we don't yet parse in Phase 0: interactive, location,
-          contacts, sticker, reaction, unsupported. These are handled in Phase 1.
+        - `unsupported` message types and anything else Meta adds later
         """
         try:
             value = payload["entry"][0]["changes"][0]["value"]
@@ -439,11 +438,110 @@ class WhatsAppAdapter(ChannelAdapter):
                 sender_name=sender_name,
             )
 
-        # Interactive replies, location, contacts, sticker, reaction, unsupported,
-        # etc. — Phase 1 will parse these into IncomingMessage. For Phase 0 we
-        # drop them safely so dispatch doesn't crash.
+        if msg_type_raw == "sticker":
+            sticker = msg.get("sticker") or {}
+            return IncomingMessage(
+                wa_id=wa_id,
+                text=None,
+                msg_id=msg_id,
+                msg_type=MessageType.STICKER,
+                media_id=sticker.get("id"),
+                sender_name=sender_name,
+            )
+
+        if msg_type_raw == "interactive":
+            interactive = msg.get("interactive") or {}
+            inter_type = interactive.get("type")
+            if inter_type == "button_reply":
+                br = interactive.get("button_reply") or {}
+                title = br.get("title") or ""
+                return IncomingMessage(
+                    wa_id=wa_id,
+                    # Surface the title as text so tools that only read
+                    # `text` still see the user's intent.
+                    text=title or None,
+                    msg_id=msg_id,
+                    msg_type=MessageType.BUTTON_REPLY,
+                    button_reply_id=br.get("id"),
+                    button_reply_title=title or None,
+                    sender_name=sender_name,
+                )
+            if inter_type == "list_reply":
+                lr = interactive.get("list_reply") or {}
+                title = lr.get("title") or ""
+                desc = lr.get("description") or ""
+                text = f"{title}: {desc}" if desc else (title or None)
+                return IncomingMessage(
+                    wa_id=wa_id,
+                    text=text,
+                    msg_id=msg_id,
+                    msg_type=MessageType.LIST_REPLY,
+                    list_reply_id=lr.get("id"),
+                    list_reply_title=title or None,
+                    sender_name=sender_name,
+                )
+            # nfm_reply / flow replies / anything else — drop for now;
+            # Phase 2 flow support will add these.
+            log.info("Dropping interactive subtype '%s' from %s", inter_type, wa_id)
+            return None
+
+        if msg_type_raw == "location":
+            loc = msg.get("location") or {}
+            lat = loc.get("latitude")
+            lon = loc.get("longitude")
+            name = loc.get("name") or ""
+            address = loc.get("address") or ""
+            # We don't have dedicated lat/lon fields on IncomingMessage; the
+            # customer agent today doesn't route on geo. Surface a readable
+            # summary as text so the agent can at least reason about it.
+            parts = [name] if name else []
+            if address:
+                parts.append(address)
+            parts.append(f"({lat}, {lon})" if lat is not None and lon is not None else "")
+            text = " ".join(p for p in parts if p) or None
+            return IncomingMessage(
+                wa_id=wa_id,
+                text=text,
+                msg_id=msg_id,
+                msg_type=MessageType.LOCATION,
+                sender_name=sender_name,
+            )
+
+        if msg_type_raw == "contacts":
+            cards = msg.get("contacts") or []
+            if not cards:
+                return None
+            first = cards[0]
+            name_obj = first.get("name") or {}
+            formatted = name_obj.get("formatted_name") or name_obj.get("first_name") or "Contact"
+            phones = first.get("phones") or []
+            phone = phones[0].get("phone") if phones else None
+            suffix = f" ({phone})" if phone else ""
+            return IncomingMessage(
+                wa_id=wa_id,
+                text=f"[contact shared] {formatted}{suffix}",
+                msg_id=msg_id,
+                msg_type=MessageType.CONTACTS,
+                sender_name=sender_name,
+            )
+
+        if msg_type_raw == "reaction":
+            reaction = msg.get("reaction") or {}
+            emoji = reaction.get("emoji") or ""
+            target = reaction.get("message_id") or "?"
+            # Emoji "" means the user removed their reaction.
+            label = emoji if emoji else "(removed)"
+            return IncomingMessage(
+                wa_id=wa_id,
+                text=f"[reaction {label} on {target}]",
+                msg_id=msg_id,
+                msg_type=MessageType.REACTION,
+                sender_name=sender_name,
+            )
+
+        # Unsupported / future types — Meta sends `unsupported` for features
+        # our number isn't eligible for (e.g. some order types). Drop safely.
         log.info(
-            "Dropping unsupported inbound type '%s' from %s (handled in Phase 1)",
-            msg_type_raw, wa_id,
+            "Dropping unsupported inbound type '%s' from %s", msg_type_raw, wa_id,
         )
         return None

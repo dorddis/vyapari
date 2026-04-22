@@ -50,6 +50,9 @@ class MessageType(str, Enum):
     VIDEO = "video"
     DOCUMENT = "document"
     LOCATION = "location"
+    CONTACTS = "contacts"
+    STICKER = "sticker"
+    REACTION = "reaction"
     BUTTON_REPLY = "button_reply"
     LIST_REPLY = "list_reply"
 
