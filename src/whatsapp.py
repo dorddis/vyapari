@@ -1,6 +1,7 @@
 """WhatsApp Cloud API client - send and receive messages."""
 
 import logging
+from urllib.parse import urlparse
 
 import httpx
 from config import (
@@ -11,6 +12,26 @@ from config import (
 )
 
 log = logging.getLogger("vyapari.whatsapp")
+
+# Hosts we'll attach the Graph bearer token to when downloading media.
+# Meta's pre-signed media URLs today live on lookaside.fbsbx.com; we
+# also accept subdomains of facebook.com / fbcdn.net / whatsapp.net for
+# forward-compat. Any host outside this set is refused rather than
+# handing our access token to an unknown origin.
+_MEDIA_HOST_ALLOWLIST_SUFFIXES = (
+    ".facebook.com",
+    ".fbcdn.net",
+    ".whatsapp.net",
+    ".fbsbx.com",
+)
+
+
+def _is_trusted_media_host(url: str) -> bool:
+    host = (urlparse(url).hostname or "").lower()
+    if not host:
+        return False
+    # Match as a suffix — `lookaside.fbsbx.com` ends with `.fbsbx.com`, etc.
+    return any(host == s.lstrip(".") or host.endswith(s) for s in _MEDIA_HOST_ALLOWLIST_SUFFIXES)
 
 
 def _media_endpoint() -> str:
@@ -178,11 +199,25 @@ async def download_media(media_id: str) -> tuple[bytes, str]:
             raise ValueError(f"WhatsApp media metadata missing 'url': {meta}")
         mime_type = meta.get("mime_type", "application/octet-stream")
 
-        # Step 2: download the actual file bytes
+        # We re-send the Graph bearer token on the second-hop GET, so we
+        # only follow URLs whose host is in our allow-list. Without this
+        # check, a misconfigured or malicious Meta response pointing at
+        # an arbitrary host would leak the access token to that host.
+        if not _is_trusted_media_host(download_url):
+            parsed_host = urlparse(download_url).hostname or "<unparseable>"
+            raise ValueError(
+                f"Refusing to download media {media_id}: untrusted host "
+                f"{parsed_host!r}. Update _MEDIA_HOST_ALLOWLIST_SUFFIXES "
+                "if Meta has rolled out a new CDN."
+            )
+
+        # Step 2: download the actual file bytes. follow_redirects=False
+        # because any redirect would slip past the host check above.
         file_resp = await client.get(
             download_url,
             headers=headers,
             timeout=60,
+            follow_redirects=False,
         )
         file_resp.raise_for_status()
 

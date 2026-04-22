@@ -71,6 +71,7 @@ _WHATSAPP_REQUIRED_ENV = (
     "WHATSAPP_ACCESS_TOKEN",
     "WHATSAPP_PHONE_NUMBER_ID",
     "META_APP_SECRET",
+    "WHATSAPP_VERIFY_TOKEN",
 )
 
 
@@ -78,12 +79,20 @@ def _validate_whatsapp_config() -> None:
     """Fail fast if CHANNEL_MODE=whatsapp but core creds are unset.
 
     Without these we'd either build a malformed Graph URL (when
-    WHATSAPP_PHONE_NUMBER_ID is empty, see config.py:76-79) or silently
-    fail signature verification on every inbound webhook.
+    WHATSAPP_PHONE_NUMBER_ID is empty, see config.py:76-79), silently
+    fail signature verification on every inbound webhook (META_APP_SECRET),
+    or 503 every subscribe handshake Meta sends (WHATSAPP_VERIFY_TOKEN).
+
+    Whitespace-only values count as unset — they are a common .env footgun
+    (trailing space after `=`) that used to slip past the old `not x` check.
     """
     if config.CHANNEL_MODE != "whatsapp":
         return
-    missing = [name for name in _WHATSAPP_REQUIRED_ENV if not getattr(config, name, "")]
+    missing = [
+        name
+        for name in _WHATSAPP_REQUIRED_ENV
+        if not (getattr(config, name, "") or "").strip()
+    ]
     if missing:
         raise RuntimeError(
             "CHANNEL_MODE=whatsapp requires these env vars: "
@@ -188,22 +197,38 @@ def _is_valid_whatsapp_signature(raw_body: bytes, signature_header: str | None) 
 async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     """Receive incoming WhatsApp messages.
 
-    Returns 200 immediately (WhatsApp requirement), processes async.
+    Always returns 200 on well-formed POSTs (WhatsApp requirement — if we
+    5xx, Meta retries and eventually disables the subscription). Signature
+    verification failures return 403 before we touch the payload.
     """
     raw_body = await request.body()
-    if config.WHATSAPP_ENABLED:
+
+    # Signature verification fires for any whatsapp-mode deployment, not just
+    # when WHATSAPP_ENABLED=true — the two flags used to be independent and
+    # a reviewer flagged that CHANNEL_MODE=whatsapp + WHATSAPP_ENABLED=false
+    # silently skipped signature checks, letting the internet spoof inbound
+    # messages from arbitrary phone numbers.
+    verify_signature = config.WHATSAPP_ENABLED or config.CHANNEL_MODE == "whatsapp"
+    if verify_signature:
         if not config.META_APP_SECRET:
-            log.error("META_APP_SECRET is required when WHATSAPP_ENABLED=true")
+            log.error("META_APP_SECRET is required for whatsapp-mode webhooks")
             return Response(content="Webhook signature not configured", status_code=503)
         signature = request.headers.get("X-Hub-Signature-256")
         if not _is_valid_whatsapp_signature(raw_body, signature):
             log.warning("Webhook signature verification failed")
             return Response(content="Forbidden", status_code=403)
 
-    payload = await request.json()
-
-    channel = get_channel()
-    msg = channel.extract_message(payload)
+    # Parse + extract is the only place user-controlled JSON meets our
+    # typed models. Any exception here (bad JSON, unexpected Meta shape,
+    # parser regression) must be logged and acked — never propagated to
+    # 500, because that triggers Meta's retry + eventual disable cascade.
+    try:
+        payload = await request.json()
+        channel = get_channel()
+        msg = channel.extract_message(payload)
+    except Exception:
+        log.exception("Webhook payload parse failed; ack'ing anyway")
+        return {"status": "ok"}
 
     if msg is None:
         return {"status": "ok"}
