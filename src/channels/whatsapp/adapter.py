@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import logging
 from uuid import uuid4
 
 from channels.base import ChannelAdapter
 from models import IncomingMessage, MessageType
 from services.message_log import log_message
 from whatsapp import (
-    extract_message as legacy_extract_message,
     mark_read as legacy_mark_read,
+    send_audio as legacy_send_audio,
     send_image as legacy_send_image,
     send_text as legacy_send_text,
+    upload_media as legacy_upload_media,
 )
+
+log = logging.getLogger("vyapari.channels.whatsapp")
 
 
 def _extract_response_msg_id(response: dict) -> str:
@@ -85,6 +89,39 @@ class WhatsAppAdapter(ChannelAdapter):
         )
         return external_msg_id
 
+    async def send_audio(
+        self, to: str, audio_bytes: bytes, mime_type: str = "audio/ogg; codecs=opus"
+    ) -> str:
+        """Upload the audio bytes to Meta's media endpoint, then send by media_id.
+
+        Two Graph API calls: upload -> /media, send -> /messages. Returns the
+        Cloud API message id so the caller can correlate status callbacks.
+        """
+        # Trim any codec parameters for the filename hint; the mime_type stays full.
+        base_mime = mime_type.split(";")[0].strip()
+        ext = base_mime.split("/")[-1] if "/" in base_mime else "bin"
+        upload_result = await legacy_upload_media(
+            file_bytes=audio_bytes,
+            mime_type=mime_type,
+            filename=f"voice.{ext}",
+        )
+        media_id = upload_result.get("id")
+        if not media_id:
+            raise RuntimeError(f"upload_media returned no id: {upload_result}")
+
+        response = await legacy_send_audio(to, media_id=media_id)
+        external_msg_id = _extract_response_msg_id(response)
+        await log_message(
+            wa_id=to,
+            role="bot",
+            direction="outbound",
+            channel="whatsapp",
+            text="Audio",
+            msg_type="audio",
+            external_msg_id=external_msg_id,
+        )
+        return external_msg_id
+
     async def send_buttons(
         self,
         to: str,
@@ -154,14 +191,110 @@ class WhatsAppAdapter(ChannelAdapter):
         await legacy_mark_read(msg_id)
 
     def extract_message(self, payload: dict) -> IncomingMessage | None:
-        parsed = legacy_extract_message(payload)
-        if parsed is None:
+        """Parse a WhatsApp Cloud API webhook payload into an IncomingMessage.
+
+        Returns None for:
+        - Non-message payloads (status updates, system events, malformed)
+        - Message types we don't yet parse in Phase 0: interactive, location,
+          contacts, sticker, reaction, unsupported. These are handled in Phase 1.
+        """
+        try:
+            value = payload["entry"][0]["changes"][0]["value"]
+        except (KeyError, IndexError, TypeError):
             return None
 
-        wa_id, text, msg_id = parsed
-        return IncomingMessage(
-            wa_id=wa_id,
-            text=text,
-            msg_id=msg_id,
-            msg_type=MessageType.TEXT,
+        # Status updates (delivered/read/failed/sent) have `statuses`, not `messages`.
+        # These get logged in Phase 1; for now they're safely dropped.
+        if "statuses" in value:
+            return None
+
+        messages = value.get("messages")
+        if not messages:
+            return None
+
+        msg = messages[0]
+        wa_id = msg.get("from")
+        msg_id = msg.get("id")
+        msg_type_raw = msg.get("type", "text")
+
+        if not wa_id or not msg_id:
+            return None
+
+        # Sender display name (from WhatsApp profile) if present.
+        sender_name: str | None = None
+        contacts = value.get("contacts") or []
+        if contacts:
+            profile = contacts[0].get("profile") or {}
+            sender_name = profile.get("name")
+
+        # Branch on message type. Phase 0 covers text + the four media kinds
+        # that main.py:200-275 already flows. Everything else is deferred.
+        if msg_type_raw == "text":
+            text_body = (msg.get("text") or {}).get("body")
+            return IncomingMessage(
+                wa_id=wa_id,
+                text=text_body,
+                msg_id=msg_id,
+                msg_type=MessageType.TEXT,
+                sender_name=sender_name,
+            )
+
+        if msg_type_raw == "image":
+            image = msg.get("image") or {}
+            return IncomingMessage(
+                wa_id=wa_id,
+                text=None,
+                msg_id=msg_id,
+                msg_type=MessageType.IMAGE,
+                media_id=image.get("id"),
+                caption=image.get("caption"),
+                sender_name=sender_name,
+            )
+
+        if msg_type_raw == "document":
+            doc = msg.get("document") or {}
+            return IncomingMessage(
+                wa_id=wa_id,
+                text=None,
+                msg_id=msg_id,
+                msg_type=MessageType.DOCUMENT,
+                media_id=doc.get("id"),
+                caption=doc.get("caption"),
+                sender_name=sender_name,
+            )
+
+        if msg_type_raw == "audio":
+            audio = msg.get("audio") or {}
+            # Voice notes carry `voice: true`; plain audio uploads don't.
+            is_voice = bool(audio.get("voice"))
+            return IncomingMessage(
+                wa_id=wa_id,
+                text=None,
+                msg_id=msg_id,
+                msg_type=MessageType.VOICE if is_voice else MessageType.AUDIO,
+                media_id=audio.get("id"),
+                sender_name=sender_name,
+            )
+
+        if msg_type_raw == "video":
+            # main.py:270-275 rejects videos with a friendly message.
+            # Surface the type so that reject path fires.
+            video = msg.get("video") or {}
+            return IncomingMessage(
+                wa_id=wa_id,
+                text=None,
+                msg_id=msg_id,
+                msg_type=MessageType.VIDEO,
+                media_id=video.get("id"),
+                caption=video.get("caption"),
+                sender_name=sender_name,
+            )
+
+        # Interactive replies, location, contacts, sticker, reaction, unsupported,
+        # etc. — Phase 1 will parse these into IncomingMessage. For Phase 0 we
+        # drop them safely so dispatch doesn't crash.
+        log.info(
+            "Dropping unsupported inbound type '%s' from %s (handled in Phase 1)",
+            msg_type_raw, wa_id,
         )
+        return None

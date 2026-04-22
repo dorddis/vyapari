@@ -3,9 +3,26 @@
 import logging
 
 import httpx
-from config import WHATSAPP_ACCESS_TOKEN, WHATSAPP_API_URL, WHATSAPP_API_VERSION
+from config import (
+    WHATSAPP_ACCESS_TOKEN,
+    WHATSAPP_API_URL,
+    WHATSAPP_API_VERSION,
+    WHATSAPP_PHONE_NUMBER_ID,
+)
 
 log = logging.getLogger("vyapari.whatsapp")
+
+
+def _media_endpoint() -> str:
+    """URL for /{phone_number_id}/media upload.
+
+    Derived at call-time so a missing WHATSAPP_PHONE_NUMBER_ID env var
+    surfaces as a clean 404 rather than a silent URL corruption.
+    """
+    return (
+        f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
+        f"/{WHATSAPP_PHONE_NUMBER_ID}/media"
+    )
 
 
 async def send_text(to: str, text: str) -> dict:
@@ -48,6 +65,70 @@ async def send_image(to: str, image_url: str, caption: str = "") -> dict:
             timeout=30,
         )
         return resp.json()
+
+
+async def send_audio(to: str, media_id: str | None = None, link: str | None = None) -> dict:
+    """Send an audio/voice message.
+
+    Pass either `media_id` (after uploading bytes via `upload_media`) or
+    `link` (publicly reachable URL). WhatsApp voice notes must be OGG/Opus.
+    """
+    if not media_id and not link:
+        raise ValueError("send_audio requires either media_id or link")
+
+    audio_obj: dict = {"id": media_id} if media_id else {"link": link}
+    payload = {
+        "messaging_product": "whatsapp",
+        "to": to,
+        "type": "audio",
+        "audio": audio_obj,
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            WHATSAPP_API_URL,
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
+                "Content-Type": "application/json",
+            },
+            timeout=30,
+        )
+        return resp.json()
+
+
+async def upload_media(
+    file_bytes: bytes,
+    mime_type: str,
+    filename: str = "upload.bin",
+) -> dict:
+    """Upload media to WhatsApp and return {"id": <media_id>, ...}.
+
+    Required before sending audio/video/document by media_id. Uses the
+    /{phone_number_id}/media endpoint (multipart/form-data).
+    """
+    if not file_bytes:
+        raise ValueError("upload_media called with empty bytes")
+
+    files = {"file": (filename, file_bytes, mime_type)}
+    data = {
+        "messaging_product": "whatsapp",
+        "type": mime_type,
+    }
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            _media_endpoint(),
+            files=files,
+            data=data,
+            headers={"Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}"},
+            timeout=60,
+        )
+        resp.raise_for_status()
+        result = resp.json()
+        log.info(
+            "Uploaded media (%s, %d bytes) -> %s",
+            mime_type, len(file_bytes), result.get("id"),
+        )
+        return result
 
 
 async def mark_read(message_id: str) -> dict:
