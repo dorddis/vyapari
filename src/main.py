@@ -217,19 +217,52 @@ async def _record_status_event(
         )
 
 
-def _is_valid_whatsapp_signature(raw_body: bytes, signature_header: str | None) -> bool:
-    """Verify X-Hub-Signature-256 against META_APP_SECRET."""
+def _is_valid_whatsapp_signature(
+    raw_body: bytes,
+    signature_header: str | None,
+    *,
+    app_secret: str | None = None,
+) -> bool:
+    """Verify X-Hub-Signature-256.
+
+    `app_secret` defaults to the global `config.META_APP_SECRET` so the
+    legacy single-tenant call sites stay working. Phase 3 multi-tenant
+    callers pass the per-tenant secret resolved from `whatsapp_channels`.
+    """
     if not signature_header:
         return False
     if not signature_header.startswith("sha256="):
         return False
+    secret = app_secret if app_secret is not None else config.META_APP_SECRET
+    if not secret:
+        return False
     provided = signature_header.split("=", 1)[1].strip()
     digest = hmac.new(
-        key=config.META_APP_SECRET.encode("utf-8"),
+        key=secret.encode("utf-8"),
         msg=raw_body,
         digestmod=hashlib.sha256,
     ).hexdigest()
     return hmac.compare_digest(provided, digest)
+
+
+def _extract_phone_number_id(raw_body: bytes) -> str | None:
+    """Peek at a webhook body to find the phone_number_id without full parse.
+
+    Returns None if the body isn't JSON or doesn't carry the field.
+    Used for tenant resolution BEFORE signature verification — we don't
+    need a signed body to decide which tenant's app_secret to verify
+    against. (The signature check still happens; we just need to know
+    which key to use.)
+    """
+    import json as _json
+    try:
+        payload = _json.loads(raw_body)
+    except Exception:
+        return None
+    try:
+        return payload["entry"][0]["changes"][0]["value"]["metadata"]["phone_number_id"]
+    except (KeyError, IndexError, TypeError):
+        return None
 
 
 @app.post("/webhook")
@@ -242,6 +275,36 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     """
     raw_body = await request.body()
 
+    # Tenant resolution: if the payload carries a phone_number_id we serve,
+    # look up the per-tenant app_secret from whatsapp_channels and verify
+    # the signature against THAT. Falls back to the global META_APP_SECRET
+    # for the single-tenant demo deployments that haven't created a
+    # whatsapp_channels row yet (Phase 0-2 compatibility).
+    phone_number_id = _extract_phone_number_id(raw_body)
+    tenant_app_secret: str | None = None
+    tenant_business_id: str | None = None
+    if phone_number_id:
+        try:
+            from services.business_config import (
+                resolve_business_id_from_phone_number_id,
+                load_business_context,
+                NoActiveChannelError,
+                BusinessNotFoundError,
+            )
+            tenant_business_id = await resolve_business_id_from_phone_number_id(
+                phone_number_id
+            )
+            if tenant_business_id:
+                try:
+                    ctx = await load_business_context(tenant_business_id)
+                    tenant_app_secret = ctx.app_secret
+                except (NoActiveChannelError, BusinessNotFoundError):
+                    # Resolver found the phone_number_id but the channel
+                    # row is stale / orphaned. Fall through to global key.
+                    tenant_app_secret = None
+        except Exception:
+            log.exception("Tenant resolution failed; falling back to global secret")
+
     # Signature verification fires for any whatsapp-mode deployment, not just
     # when WHATSAPP_ENABLED=true — the two flags used to be independent and
     # a reviewer flagged that CHANNEL_MODE=whatsapp + WHATSAPP_ENABLED=false
@@ -249,12 +312,24 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     # messages from arbitrary phone numbers.
     verify_signature = config.WHATSAPP_ENABLED or config.CHANNEL_MODE == "whatsapp"
     if verify_signature:
-        if not config.META_APP_SECRET:
-            log.error("META_APP_SECRET is required for whatsapp-mode webhooks")
+        effective_secret = tenant_app_secret or config.META_APP_SECRET
+        if not effective_secret:
+            log.error(
+                "No signing secret for webhook (phone_number_id=%s, "
+                "tenant=%s): set META_APP_SECRET or provision a "
+                "whatsapp_channels row.",
+                _safe_log_field(phone_number_id),
+                _safe_log_field(tenant_business_id),
+            )
             return Response(content="Webhook signature not configured", status_code=503)
         signature = request.headers.get("X-Hub-Signature-256")
-        if not _is_valid_whatsapp_signature(raw_body, signature):
-            log.warning("Webhook signature verification failed")
+        if not _is_valid_whatsapp_signature(raw_body, signature, app_secret=effective_secret):
+            log.warning(
+                "Webhook signature verification failed "
+                "(phone_number_id=%s, tenant=%s)",
+                _safe_log_field(phone_number_id),
+                _safe_log_field(tenant_business_id),
+            )
             return Response(content="Forbidden", status_code=403)
 
     # Parse + extract is the only place user-controlled JSON meets our

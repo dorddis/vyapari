@@ -280,3 +280,140 @@ async def test_webhook_get_wrong_token_rejected(client) -> None:
             },
         )
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Tenant-resolved signature verification (P3.2)
+# ---------------------------------------------------------------------------
+
+TENANT_SECRET = "per-tenant-secret-42"
+GLOBAL_SECRET = TEST_SECRET  # smoke-secret
+
+
+@pytest.mark.asyncio
+async def test_webhook_uses_tenant_app_secret_when_phone_number_id_resolves(
+    client, monkeypatch
+):
+    """A payload carrying a phone_number_id that resolves to a tenant-
+    specific channel row must be verified against that tenant's
+    app_secret, NOT the global META_APP_SECRET.
+    """
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv("VYAPARI_ENCRYPTION_KEY", Fernet.generate_key().decode())
+
+    # Seed a whatsapp_channel row with its own app_secret
+    import config
+    from database import get_session_factory
+    from db_models import WhatsAppChannel
+    from services.secrets import encrypt_secrets
+    from services import business_config as bc
+
+    bc.invalidate_cache()
+    async with get_session_factory()() as s:
+        s.add(
+            WhatsAppChannel(
+                business_id=config.DEFAULT_BUSINESS_ID,
+                phone_number="919900000001",
+                phone_number_id="pni-tenant-A",
+                waba_id="waba-A",
+                provider_config=encrypt_secrets({
+                    "access_token": "tenant-A-token",
+                    "app_secret": TENANT_SECRET,
+                    "webhook_verify_token": "vt-A",
+                    "verification_pin": "0001",
+                }),
+            )
+        )
+        await s.commit()
+
+    # Build a webhook payload that names pni-tenant-A
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [{
+            "id": "102290129340398",
+            "changes": [{
+                "value": {
+                    "messaging_product": "whatsapp",
+                    "metadata": {"phone_number_id": "pni-tenant-A"},
+                    "contacts": [{"profile": {"name": "X"}, "wa_id": "9199"}],
+                    "messages": [{
+                        "from": "9199", "id": "wamid.tenant-A",
+                        "type": "text", "text": {"body": "hi"},
+                    }],
+                },
+                "field": "messages",
+            }],
+        }],
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    async with httpx.AsyncClient(
+        transport=client["transport"], base_url="http://test",
+    ) as http:
+        # Signed with TENANT secret -> 200
+        resp = await http.post(
+            "/webhook", content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": _sign(body, TENANT_SECRET),
+            },
+        )
+        assert resp.status_code == 200, resp.text
+
+        # Signed with GLOBAL secret -> 403 (wrong key for this tenant)
+        resp = await http.post(
+            "/webhook", content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": _sign(body, GLOBAL_SECRET),
+            },
+        )
+        assert resp.status_code == 403, resp.text
+
+
+@pytest.mark.asyncio
+async def test_webhook_falls_back_to_global_secret_when_tenant_unknown(
+    client, monkeypatch
+):
+    """A payload with a phone_number_id we don't have in whatsapp_channels
+    (legacy single-tenant demo, or a number that hasn't been onboarded yet)
+    must still verify against the global META_APP_SECRET. This keeps
+    Phase 0-2 smoke flows + any manual tests working during the migration
+    window.
+    """
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv("VYAPARI_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    from services import business_config as bc
+    bc.invalidate_cache()
+
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [{
+            "id": "1",
+            "changes": [{
+                "value": {
+                    "messaging_product": "whatsapp",
+                    "metadata": {"phone_number_id": "unknown-pni"},
+                    "messages": [{
+                        "from": "9199", "id": "wamid.global",
+                        "type": "text", "text": {"body": "hi"},
+                    }],
+                },
+                "field": "messages",
+            }],
+        }],
+    }
+    body = json.dumps(payload).encode("utf-8")
+
+    async with httpx.AsyncClient(
+        transport=client["transport"], base_url="http://test",
+    ) as http:
+        resp = await http.post(
+            "/webhook", content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": _sign(body, GLOBAL_SECRET),
+            },
+        )
+    # Unknown tenant -> fell back to global. Signed correctly -> 200.
+    assert resp.status_code == 200
