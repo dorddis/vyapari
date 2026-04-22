@@ -533,6 +533,41 @@ class MessageTemplate(Base):
 
 
 # ---------------------------------------------------------------------------
+# API Keys (per-business REST auth)
+# ---------------------------------------------------------------------------
+
+class ApiKey(Base):
+    """Per-business API key record.
+
+    Each key is stored as a SHA-256 hash — the plaintext is shown ONCE
+    at mint time and never persisted. The auth middleware hashes the
+    incoming X-API-Key header and queries this table; the matching
+    row's business_id binds the request to a tenant.
+
+    Revoking a key sets revoked_at; the auth check rejects revoked
+    rows without deleting them (audit trail).
+    """
+
+    __tablename__ = "api_keys"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    business_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    # SHA-256 hex of the plaintext key. Indexed for O(1) auth lookups.
+    key_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True, index=True)
+    # First 8 chars of the plaintext key — shown in admin UIs so humans
+    # can recognize "which key was this" without revealing the secret.
+    key_prefix: Mapped[str] = mapped_column(String(16), default="")
+    description: Mapped[str] = mapped_column(String(256), default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc
+    )
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# ---------------------------------------------------------------------------
 # Processed Messages (DB-backed idempotency)
 # ---------------------------------------------------------------------------
 

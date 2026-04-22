@@ -88,12 +88,15 @@ def _require_web_clone() -> WebCloneAdapter:
 def _resolve_business_id(request: Request) -> str:
     """Resolve the tenant for a REST API request.
 
-    Accepts an explicit X-Business-Id header. Falls back to the
-    single-tenant bootstrap default (for the web demo and tests).
-
-    Phase 3.7 replaces this with a per-business API key lookup that
-    binds business_id to the key row, eliminating the header entirely.
+    Priority (Phase 3.7):
+    1. If `request.state.business_id` was set by `_require_api_auth` from
+       an API key lookup, use that — the key binds to a specific tenant.
+    2. Explicit `X-Business-Id` header (dev / ops override).
+    3. Single-tenant bootstrap default (web demo, tests).
     """
+    auth_bid = getattr(request.state, "business_id", None)
+    if auth_bid:
+        return auth_bid
     header_bid = request.headers.get("X-Business-Id")
     if header_bid:
         return header_bid.strip()
@@ -105,18 +108,45 @@ def _new_msg_id(prefix: str) -> str:
     return f"{prefix}-{uuid4()}"
 
 
-def _require_api_auth(request: Request) -> None:
+async def _require_api_auth(request: Request) -> None:
+    """Authenticate a REST request.
+
+    Tries (in order):
+    1. Per-business API key (X-API-Key or Bearer token) against the
+       `api_keys` table. Success sets `request.state.business_id`.
+    2. Legacy shared `config.API_AUTH_TOKEN` — single-tenant demo path.
+       No business_id is bound; _resolve_business_id falls back to the
+       bootstrap default.
+
+    Auth is skipped entirely when neither enforcement path is enabled
+    (APP_ENV != production AND API_AUTH_TOKEN unset).
+    """
     requires_auth = config.APP_ENV.lower() == "production" or bool(config.API_AUTH_TOKEN)
     if not requires_auth:
         return
-    if not config.API_AUTH_TOKEN:
-        raise HTTPException(status_code=503, detail="API auth token is not configured")
 
     auth_header = request.headers.get("Authorization", "")
     bearer = auth_header.removeprefix("Bearer ").strip() if auth_header else ""
     provided = request.headers.get("X-API-Key") or bearer
-    if not provided or not hmac.compare_digest(provided, config.API_AUTH_TOKEN):
+    if not provided:
         raise HTTPException(status_code=401, detail="Unauthorized")
+
+    # Phase 3.7: per-business API key lookup first.
+    try:
+        from services.api_keys import verify_api_key
+        biz = await verify_api_key(provided)
+    except Exception:
+        biz = None
+
+    if biz:
+        request.state.business_id = biz
+        return
+
+    # Legacy fallback: shared single-tenant token.
+    if config.API_AUTH_TOKEN and hmac.compare_digest(provided, config.API_AUTH_TOKEN):
+        return
+
+    raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 def _to_ui_mode(state_value: ConversationState) -> str:
@@ -161,7 +191,7 @@ def _to_catalogue_card(car: dict[str, object]) -> dict[str, object]:
 @router.post("/chat")
 async def customer_chat(req: ChatRequest, request: Request):
     """Customer sends a message through the web clone."""
-    _require_api_auth(request)
+    await _require_api_auth(request)
     channel = _require_web_clone()
     msg = IncomingMessage(
         wa_id=req.customer_id,
@@ -196,7 +226,7 @@ async def get_messages(
     since_id: str | None = None,
 ):
     """Return persisted message history for a single customer."""
-    _require_api_auth(request)
+    await _require_api_auth(request)
     _require_web_clone()
     mode = await state.get_conversation_state(wa_id)
     messages = await fetch_messages_for_wa_id(wa_id, since_id=since_id)
@@ -214,7 +244,7 @@ async def get_messages(
 @router.post("/owner/chat")
 async def owner_chat(req: OwnerChatRequest, request: Request):
     """Owner or SDR sends a message to the agent or relay path."""
-    _require_api_auth(request)
+    await _require_api_auth(request)
     _require_web_clone()
     msg = IncomingMessage(
         wa_id=req.staff_id,
@@ -239,7 +269,7 @@ async def owner_chat(req: OwnerChatRequest, request: Request):
 @router.get("/conversations")
 async def list_conversations(request: Request):
     """List conversations for the owner panel."""
-    _require_api_auth(request)
+    await _require_api_auth(request)
     _require_web_clone()
     conversations = await list_conversations_from_logs()
     for conversation in conversations:
@@ -252,7 +282,7 @@ async def list_conversations(request: Request):
 @router.get("/conversation/{wa_id}")
 async def get_conversation_detail(wa_id: str, request: Request):
     """Get a customer's full message history."""
-    _require_api_auth(request)
+    await _require_api_auth(request)
     _require_web_clone()
     customer = await state.get_customer(wa_id)
     if not customer:
@@ -276,7 +306,7 @@ async def get_conversation_detail(wa_id: str, request: Request):
 @router.get("/staff")
 async def list_staff(request: Request):
     """List all staff members."""
-    _require_api_auth(request)
+    await _require_api_auth(request)
     staff_list = await state.list_staff()
     return {
         "staff": [
@@ -298,7 +328,7 @@ async def list_staff(request: Request):
 @router.post("/owner/send")
 async def owner_send(req: OwnerSendRequest, request: Request):
     """Send a message from the default owner into a customer relay."""
-    _require_api_auth(request)
+    await _require_api_auth(request)
     _require_web_clone()
     from services.business_config import default_owner_phone
     owner_wa_id = default_owner_phone()
@@ -329,7 +359,7 @@ async def owner_send(req: OwnerSendRequest, request: Request):
 @router.post("/owner/release")
 async def owner_release(req: OwnerReleaseRequest, request: Request):
     """Release a relay session for the default owner."""
-    _require_api_auth(request)
+    await _require_api_auth(request)
     _require_web_clone()
     from services.business_config import default_owner_phone
     owner_wa_id = default_owner_phone()
@@ -350,7 +380,7 @@ async def owner_release(req: OwnerReleaseRequest, request: Request):
 @router.post("/owner/query")
 async def oracle_query(req: OracleRequest, request: Request):
     """Send an owner oracle query via the standard owner dispatch path."""
-    _require_api_auth(request)
+    await _require_api_auth(request)
     _require_web_clone()
     from services.business_config import default_owner_phone
     owner_wa_id = default_owner_phone()
@@ -370,7 +400,7 @@ async def oracle_query(req: OracleRequest, request: Request):
 @router.post("/reset")
 async def reset_conversation(req: ResetRequest, request: Request):
     """Reset a customer's conversation (for demo purposes)."""
-    _require_api_auth(request)
+    await _require_api_auth(request)
     _require_web_clone()
     await delete_messages_for_wa_id(req.customer_id)
     await state.reset_customer_state(req.customer_id)
@@ -389,7 +419,7 @@ async def get_catalogue(
     transmission: str | None = Query(default=None, max_length=32),
 ):
     """Get filtered catalogue cards for frontend browsing."""
-    _require_api_auth(request)
+    await _require_api_auth(request)
     _require_web_clone()
     results = search_cars(
         max_price=max_price,
@@ -423,7 +453,7 @@ async def voice_chat(
 
     Returns both the text reply and an audio reply (base64-encoded Opus).
     """
-    _require_api_auth(request)
+    await _require_api_auth(request)
     channel = _require_web_clone()
     from services.voice import generate_voice_reply, transcribe_voice_note
 
@@ -485,7 +515,7 @@ async def upload_image_endpoint(
     agent for vision analysis. The URL is also saved in message history
     so conversation replay can show the image.
     """
-    _require_api_auth(request)
+    await _require_api_auth(request)
     channel = _require_web_clone()
     from services.image_store import upload_image as store_image
 
