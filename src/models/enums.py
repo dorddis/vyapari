@@ -73,3 +73,12 @@ class RelaySessionStatus(str, Enum):
     ACTIVE = "active"
     CLOSED = "closed"
     EXPIRED = "expired"
+
+
+class MessageTemplateStatus(str, Enum):
+    """Lifecycle status of a Meta-approved message template."""
+    PENDING = "pending"        # submitted, awaiting Meta review
+    APPROVED = "approved"      # safe to send (inside + outside 24h window)
+    REJECTED = "rejected"      # Meta rejected; cannot send
+    PAUSED = "paused"          # auto-paused by Meta for quality issues
+    DISABLED = "disabled"      # we turned it off (do-not-use)

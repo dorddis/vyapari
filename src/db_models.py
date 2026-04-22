@@ -198,6 +198,12 @@ class Customer(Base):
     last_active: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now_utc
     )
+    # 24-hour customer-service window source of truth. Updated ONLY on
+    # inbound messages (not our own outbound), so the dispatcher can
+    # decide whether to send a free-form reply or a template.
+    last_inbound_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     notes: Mapped[str | None] = mapped_column(Text)
 
     business: Mapped[Business] = relationship(back_populates="customers")
@@ -208,6 +214,7 @@ class Customer(Base):
     __table_args__ = (
         Index("ix_customers_business_lead", "business_id", "lead_status"),
         Index("ix_customers_last_active", "last_active"),
+        Index("ix_customers_last_inbound", "last_inbound_at"),
     )
 
 
@@ -393,6 +400,57 @@ class OwnerSetup(Base):
         DateTime(timezone=True), default=_now_utc, onupdate=_now_utc
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+# ---------------------------------------------------------------------------
+# Message Template (Meta-approved outbound templates)
+# ---------------------------------------------------------------------------
+
+class MessageTemplate(Base):
+    """A business-scoped record of a WhatsApp message template.
+
+    Templates are authored by us (or the business owner), submitted to
+    Meta for approval, and cached here with their latest status. The
+    outbound dispatcher checks this table before sending anything
+    outside the 24-hour customer-service window.
+
+    Unique on (business_id, name, language) — a business can have
+    `followup_24h` in both en and hi_IN, but not two "en" copies.
+    """
+
+    __tablename__ = "message_templates"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    business_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(128), nullable=False)
+    language: Mapped[str] = mapped_column(String(16), nullable=False, default="en")
+    # Meta's template categories: "UTILITY", "MARKETING", "AUTHENTICATION".
+    category: Mapped[str] = mapped_column(String(32), default="UTILITY")
+    # The header/body/footer/buttons shape we'll send to Meta. Matches
+    # the `components` field on the send_template payload exactly.
+    components: Mapped[list] = mapped_column(JSON, default=list)
+    # See MessageTemplateStatus enum. Stored as string so Alembic
+    # migrations don't have to know about the enum class.
+    status: Mapped[str] = mapped_column(String(16), default="pending", index=True)
+    rejected_reason: Mapped[str | None] = mapped_column(Text)
+    # Meta's own identifier after approval. Nullable until Meta acks.
+    meta_template_id: Mapped[str | None] = mapped_column(String(128))
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc, onupdate=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "business_id", "name", "language", name="uq_template_business_name_lang"
+        ),
+        Index("ix_templates_business_status", "business_id", "status"),
+    )
 
 
 # ---------------------------------------------------------------------------
