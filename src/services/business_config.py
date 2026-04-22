@@ -53,12 +53,24 @@ def default_business_id() -> str:
     Do NOT use this in new code paths. Every production multi-tenant
     path should resolve business_id from the request context (WhatsApp
     webhook -> phone_number_id; REST -> X-API-Key lookup). This helper
-    exists to keep the grep fence (which blocks DEFAULT_BUSINESS_ID
-    references outside config.py / tests / migrations) from flagging
-    the ONE legitimate bootstrap case.
+    exists to keep the grep fence from flagging the ONE legitimate
+    bootstrap case — business_config.py is whitelisted in the fence
+    alongside config.py / tests / migrations.
     """
     import config as _config
     return _config.DEFAULT_BUSINESS_ID
+
+
+def default_owner_phone() -> str:
+    """Single-tenant bootstrap owner phone — for legacy demo endpoints.
+
+    Same rationale as default_business_id: the sanctioned indirection
+    for the transitional single-tenant web demo path. Phase 3.7
+    replaces the web_api.py callers with per-business auth so the
+    owner is resolved from whatsapp_channels + staff roles.
+    """
+    import config as _config
+    return _config.DEFAULT_OWNER_PHONE
 
 
 class BusinessNotFoundError(Exception):

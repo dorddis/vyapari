@@ -226,8 +226,8 @@ async def run_customer_agent(
     `business_id` is required — see CustomerContext for the reasoning.
     """
     # Load customer + conversation state
-    customer = await state.get_or_create_customer(wa_id)
-    conversation = await state.get_or_create_conversation(wa_id)
+    customer = await state.get_or_create_customer(wa_id, business_id=business_id)
+    conversation = await state.get_or_create_conversation(wa_id, business_id=business_id)
 
     # Build context
     ctx = CustomerContext(

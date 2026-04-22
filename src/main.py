@@ -107,7 +107,8 @@ async def lifespan(app: FastAPI):
     _validate_whatsapp_config()
     await init_db()
     await state.init_state()
-    log.info(f"Owner seeded: {config.DEFAULT_OWNER_NAME} ({config.DEFAULT_OWNER_PHONE})")
+    from services.business_config import default_owner_phone
+    log.info(f"Owner seeded: {config.DEFAULT_OWNER_NAME} ({default_owner_phone()})")
     log.info(f"Channel mode: {config.CHANNEL_MODE}")
     log.info(f"LLM: OpenAI {config.OPENAI_MAIN_MODEL}")
 

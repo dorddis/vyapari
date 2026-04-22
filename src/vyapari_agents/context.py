@@ -17,7 +17,7 @@ class CustomerContext:
     `business_id` is required — it carries the tenant the agent is
     running for, so every tool that reads state scopes its DB queries
     correctly. Phase 3 made this required; earlier drafts had a
-    hardcoded "demo-sharma-motors" default that quietly crossed tenants.
+    hardcoded default that quietly crossed tenants.
     """
     customer_id: str  # wa_id
     business_id: str

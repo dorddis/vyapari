@@ -42,7 +42,17 @@ log = logging.getLogger("vyapari.state")
 # Helpers
 # ---------------------------------------------------------------------------
 
-_DEFAULT_BIZ = config.DEFAULT_BUSINESS_ID
+def _default_biz_for_seed() -> str:
+    """Resolve the single-tenant bootstrap business id for seed paths.
+
+    The ONLY legitimate caller is init_state() below — it seeds the demo
+    Business row + the first owner so an empty DB is usable locally.
+    Production / multi-tenant deployments do not rely on this; every
+    inbound request carries its own resolved business_id which gets
+    threaded through state.* functions as a required parameter.
+    """
+    from services.business_config import default_business_id
+    return default_business_id()
 
 
 def _now() -> datetime:
@@ -215,7 +225,16 @@ async def add_staff(
     otp_hash: str | None = None,
     otp_expires_at: datetime | None = None,
     added_by: str | None = None,
+    *,
+    business_id: str | None = None,
 ) -> StaffRecord:
+    """Add or upsert a staff member. `business_id` is required for new
+    rows; updates are keyed by wa_id so existing rows keep their tenant.
+
+    `business_id` defaults to the single-tenant bootstrap id for back-
+    compat with Phase 0-2 callers + test fixtures. Phase 3 multi-tenant
+    callers always pass it explicitly.
+    """
     async with _session() as s:
         existing = await s.get(M.Staff, wa_id)
         if existing:
@@ -230,7 +249,7 @@ async def add_staff(
             return _staff_to_record(existing)
         row = M.Staff(
             wa_id=wa_id,
-            business_id=_DEFAULT_BIZ,
+            business_id=business_id or _default_biz_for_seed(),
             name=name,
             role=role.value,
             status=status.value,
@@ -299,8 +318,18 @@ async def get_customer(wa_id: str) -> CustomerRecord | None:
 
 
 async def get_or_create_customer(
-    wa_id: str, name: str | None = None, source: str | None = None
+    wa_id: str,
+    name: str | None = None,
+    source: str | None = None,
+    *,
+    business_id: str | None = None,
 ) -> CustomerRecord:
+    """Find or create a Customer row.
+
+    `business_id` is used when creating a new row; existing rows keep
+    their original tenant. Defaults to the bootstrap id for back-compat;
+    new code paths should always pass it explicitly.
+    """
     async with _session() as s:
         row = await s.get(M.Customer, wa_id)
         if row:
@@ -311,7 +340,7 @@ async def get_or_create_customer(
             return _customer_to_record(row)
         row = M.Customer(
             wa_id=wa_id,
-            business_id=_DEFAULT_BIZ,
+            business_id=business_id or _default_biz_for_seed(),
             name=name or "Customer",
             source=source,
             first_seen=_now(),
@@ -342,9 +371,17 @@ async def list_customers(
     status_filter: list[LeadStatus] | None = None,
     search_query: str | None = None,
     limit: int = 20,
+    *,
+    business_id: str | None = None,
 ) -> list[CustomerRecord]:
+    """List customers scoped to a business.
+
+    `business_id` defaults to the bootstrap id for back-compat. Agent
+    tools that have a CustomerContext must pass ctx.business_id.
+    """
+    scope_biz = business_id or _default_biz_for_seed()
     async with _session() as s:
-        stmt = select(M.Customer).where(M.Customer.business_id == _DEFAULT_BIZ)
+        stmt = select(M.Customer).where(M.Customer.business_id == scope_biz)
         if status_filter:
             stmt = stmt.where(M.Customer.lead_status.in_([st.value for st in status_filter]))
         if search_query:
@@ -373,7 +410,15 @@ async def get_conversation(customer_wa_id: str) -> ConversationRecord | None:
         return _conv_to_record(row) if row else None
 
 
-async def get_or_create_conversation(customer_wa_id: str) -> ConversationRecord:
+async def get_or_create_conversation(
+    customer_wa_id: str, *, business_id: str | None = None
+) -> ConversationRecord:
+    """Find or create a Conversation row for a customer.
+
+    `business_id` is stamped on new rows only; existing ones keep their
+    tenant. Back-compat default preserves Phase 0-2 behavior; Phase 3
+    callers should always pass it explicitly.
+    """
     async with _session() as s:
         result = await s.execute(
             select(M.Conversation)
@@ -389,7 +434,7 @@ async def get_or_create_conversation(customer_wa_id: str) -> ConversationRecord:
         conv_id = str(uuid4())
         row = M.Conversation(
             id=conv_id,
-            business_id=_DEFAULT_BIZ,
+            business_id=business_id or _default_biz_for_seed(),
             customer_wa_id=customer_wa_id,
             started_at=_now(),
             last_updated_at=_now(),
@@ -771,31 +816,38 @@ async def complete_owner_setup(wa_id: str) -> OwnerSetupRecord | None:
 async def init_state() -> None:
     """Seed initial state — demo business + owner from config.
 
-    The SQL migration already seeds these for Postgres, but this
-    handles the SQLite fallback case where create_all doesn't run seeds.
+    The SQL migration already seeds these for Postgres, but this handles
+    the SQLite fallback case where create_all doesn't run seeds. This
+    is the ONE legitimate caller of _default_biz_for_seed() — single-
+    tenant bootstrap for local dev. Production / multi-tenant deploys
+    skip this path entirely (businesses are created via onboarding).
     """
+    from services.business_config import default_owner_phone
+    bootstrap_biz = _default_biz_for_seed()
+    bootstrap_owner = default_owner_phone()
     # Ensure the demo business exists
     async with _session() as s:
-        biz = await s.get(M.Business, _DEFAULT_BIZ)
+        biz = await s.get(M.Business, bootstrap_biz)
         if not biz:
             s.add(M.Business(
-                id=_DEFAULT_BIZ,
+                id=bootstrap_biz,
                 name=config.DEFAULT_BUSINESS_NAME,
                 type="dealership",
                 vertical=config.DEFAULT_BUSINESS_VERTICAL,
-                owner_phone=config.DEFAULT_OWNER_PHONE,
+                owner_phone=bootstrap_owner,
                 greeting="Welcome to Sharma Motors! How can I help you today?",
             ))
             await s.commit()
 
     # Ensure the owner staff record exists
-    existing = await get_staff(config.DEFAULT_OWNER_PHONE)
+    existing = await get_staff(bootstrap_owner)
     if not existing:
         await add_staff(
-            wa_id=config.DEFAULT_OWNER_PHONE,
+            wa_id=bootstrap_owner,
             name=config.DEFAULT_OWNER_NAME,
             role=StaffRole.OWNER,
             status=StaffStatus.ACTIVE,
+            business_id=bootstrap_biz,
         )
 
 

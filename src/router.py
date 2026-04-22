@@ -326,8 +326,12 @@ async def dispatch(msg: IncomingMessage) -> str | None:
 
     # Only create customer/conversation records for actual customers
     if decision.role in ("customer", "unknown"):
-        await state.get_or_create_customer(msg.wa_id, name=msg.sender_name)
-        await state.get_or_create_conversation(msg.wa_id)
+        await state.get_or_create_customer(
+            msg.wa_id, name=msg.sender_name, business_id=msg.business_id or None,
+        )
+        await state.get_or_create_conversation(
+            msg.wa_id, business_id=msg.business_id or None,
+        )
         # Opens / extends the 24-hour customer-service window. Must run
         # BEFORE the agent dispatch below — even a crashing agent must not
         # lose the window signal, since the window ultimately belongs to

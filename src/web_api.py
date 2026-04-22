@@ -300,7 +300,8 @@ async def owner_send(req: OwnerSendRequest, request: Request):
     """Send a message from the default owner into a customer relay."""
     _require_api_auth(request)
     _require_web_clone()
-    owner_wa_id = config.DEFAULT_OWNER_PHONE
+    from services.business_config import default_owner_phone
+    owner_wa_id = default_owner_phone()
 
     await state.get_or_create_customer(req.customer_id)
     await state.get_or_create_conversation(req.customer_id)
@@ -330,7 +331,8 @@ async def owner_release(req: OwnerReleaseRequest, request: Request):
     """Release a relay session for the default owner."""
     _require_api_auth(request)
     _require_web_clone()
-    owner_wa_id = config.DEFAULT_OWNER_PHONE
+    from services.business_config import default_owner_phone
+    owner_wa_id = default_owner_phone()
     incoming = IncomingMessage(
         wa_id=owner_wa_id,
         text=f"{config.COMMAND_PREFIX}done",
@@ -350,7 +352,8 @@ async def oracle_query(req: OracleRequest, request: Request):
     """Send an owner oracle query via the standard owner dispatch path."""
     _require_api_auth(request)
     _require_web_clone()
-    owner_wa_id = config.DEFAULT_OWNER_PHONE
+    from services.business_config import default_owner_phone
+    owner_wa_id = default_owner_phone()
     incoming = IncomingMessage(
         wa_id=owner_wa_id,
         text=req.query,

@@ -10,7 +10,7 @@ Usage
     cd vyapari
     export WHATSAPP_ACCESS_TOKEN=EAAG...
     export WHATSAPP_BUSINESS_ACCOUNT_ID=123456789
-    python scripts/sync_templates.py --business-id demo-sharma-motors
+    python scripts/sync_templates.py --business-id <YOUR_BUSINESS_ID>
 """
 
 from __future__ import annotations
