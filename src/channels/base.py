@@ -128,6 +128,20 @@ class ChannelAdapter(ABC):
         """
         ...
 
+    def extract_status_updates(self, payload: dict) -> list[dict]:
+        """Parse outbound-message delivery status events from a webhook payload.
+
+        Return shape (per event):
+            {"external_msg_id": str, "status": str,
+             "timestamp": str | None, "recipient_id": str | None,
+             "error": dict | None}
+
+        Default is empty — channels without delivery callbacks (web_clone)
+        inherit this. WhatsAppAdapter overrides to parse the `statuses[]`
+        array Meta delivers alongside (or instead of) inbound messages.
+        """
+        return []
+
 
 # ---------------------------------------------------------------------------
 # Channel factory

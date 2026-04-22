@@ -67,6 +67,49 @@ async def log_incoming_message(msg: IncomingMessage, channel: str) -> str:
     )
 
 
+async def update_status(
+    *,
+    external_msg_id: str,
+    status: str,
+    timestamp: str | None = None,
+    error: dict | None = None,
+) -> bool:
+    """Append a delivery-status event to an outbound message's `meta` JSON.
+
+    Called from the webhook handler when Meta sends a status update
+    (sent / delivered / read / failed). Returns True if the row was
+    found and updated, False if there's no matching external_msg_id
+    (common when Meta sends status for messages we didn't log, e.g.
+    templates fired by another process).
+
+    The row's meta gains:
+        meta.statuses = [{status, timestamp, error}, ...]
+        meta.last_status = <latest>
+    """
+    if not external_msg_id:
+        return False
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        stmt = select(MessageLog).where(MessageLog.external_msg_id == external_msg_id)
+        row = (await session.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return False
+        # MessageLog.meta is a JSON column; mutating the dict in place
+        # doesn't flag it dirty under SQLAlchemy. Re-assign to a new dict.
+        meta = dict(row.meta or {})
+        statuses = list(meta.get("statuses") or [])
+        statuses.append(
+            {"status": status, "timestamp": timestamp, "error": error}
+        )
+        meta["statuses"] = statuses
+        meta["last_status"] = status
+        if error:
+            meta["last_error"] = error
+        row.meta = meta
+        await session.commit()
+        return True
+
+
 async def fetch_messages_for_wa_id(
     wa_id: str,
     *,

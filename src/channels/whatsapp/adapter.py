@@ -337,6 +337,37 @@ class WhatsAppAdapter(ChannelAdapter):
     async def mark_read(self, msg_id: str) -> None:
         await legacy_mark_read(msg_id)
 
+    def extract_status_updates(self, payload: dict) -> list[dict]:
+        """Parse the `statuses[]` array Meta delivers for outbound messages.
+
+        Meta sends these separately from inbound user messages. The event
+        lifecycle is sent -> delivered -> read, with `failed` replacing the
+        rest on rejection (errors[] carries the reason code). We surface
+        every event so services/message_log.update_status can append it to
+        the originating outbound row's meta JSON.
+        """
+        try:
+            value = payload["entry"][0]["changes"][0]["value"]
+        except (KeyError, IndexError, TypeError):
+            return []
+        statuses = value.get("statuses") or []
+        events: list[dict] = []
+        for s in statuses:
+            if not isinstance(s, dict):
+                continue
+            errors = s.get("errors") or []
+            first_error = errors[0] if errors and isinstance(errors[0], dict) else None
+            events.append(
+                {
+                    "external_msg_id": s.get("id"),
+                    "status": s.get("status"),
+                    "timestamp": s.get("timestamp"),
+                    "recipient_id": s.get("recipient_id"),
+                    "error": first_error,
+                }
+            )
+        return events
+
     def extract_message(self, payload: dict) -> IncomingMessage | None:
         """Parse a WhatsApp Cloud API webhook payload into an IncomingMessage.
 

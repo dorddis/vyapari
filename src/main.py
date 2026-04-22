@@ -178,6 +178,32 @@ async def verify_webhook(
     return Response(content="Forbidden", status_code=403)
 
 
+async def _record_status_event(
+    external_msg_id: str,
+    status: str,
+    timestamp: str | None,
+    error: dict | None,
+) -> None:
+    """Record a delivery-status event on the outbound row's meta JSON.
+
+    Runs as a background task from the webhook handler so Meta still
+    gets its ack quickly. Failures are logged but not raised — losing
+    one status update is better than 5xx'ing the webhook.
+    """
+    try:
+        from services.message_log import update_status
+        await update_status(
+            external_msg_id=external_msg_id,
+            status=status,
+            timestamp=timestamp,
+            error=error,
+        )
+    except Exception:
+        log.exception(
+            "Failed to record status %s for %s", status, external_msg_id
+        )
+
+
 def _is_valid_whatsapp_signature(raw_body: bytes, signature_header: str | None) -> bool:
     """Verify X-Hub-Signature-256 against META_APP_SECRET."""
     if not signature_header:
@@ -229,6 +255,24 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     except Exception:
         log.exception("Webhook payload parse failed; ack'ing anyway")
         return {"status": "ok"}
+
+    # Status callbacks (delivered / read / failed) arrive on the same
+    # endpoint as inbound user messages. Fan them out to message_log in
+    # the background so the ack doesn't wait on DB.
+    try:
+        status_events = channel.extract_status_updates(payload)
+    except Exception:
+        log.exception("Status-update parsing failed; continuing")
+        status_events = []
+    for ev in status_events:
+        if ev.get("external_msg_id"):
+            background_tasks.add_task(
+                _record_status_event,
+                ev["external_msg_id"],
+                ev.get("status") or "unknown",
+                ev.get("timestamp"),
+                ev.get("error"),
+            )
 
     if msg is None:
         return {"status": "ok"}
