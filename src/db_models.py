@@ -403,6 +403,70 @@ class OwnerSetup(Base):
 
 
 # ---------------------------------------------------------------------------
+# WhatsApp Channel (per-business WABA credentials + config)
+# ---------------------------------------------------------------------------
+
+class WhatsAppChannel(Base):
+    """Per-business WhatsApp Cloud API configuration.
+
+    Phase 3 multi-tenant root for WhatsApp: the webhook handler resolves
+    inbound `phone_number_id` against this table to identify the tenant,
+    then threads the decrypted access_token / app_secret through the
+    adapter. Phase 5 onboards new tenants via Embedded Signup, which
+    populates this row via services.business_config.
+
+    provider_config shape (encrypted via services/secrets.py):
+        {
+            "key_id": "primary",
+            "ct": "<Fernet token>"  # decrypts to:
+            #   {"access_token": "...", "app_secret": "...",
+            #    "webhook_verify_token": "...", "verification_pin": "..."}
+        }
+
+    Non-secret fields (source, health, etc.) live as top-level columns
+    so queries don't require decryption.
+    """
+
+    __tablename__ = "whatsapp_channels"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    business_id: Mapped[str] = mapped_column(
+        String(64), ForeignKey("businesses.id", ondelete="CASCADE"), nullable=False
+    )
+    # Human-readable phone ("919876543210" or "+919876543210").
+    phone_number: Mapped[str] = mapped_column(String(32), nullable=False)
+    # Meta's identifier (the thing that arrives in every webhook's
+    # metadata.phone_number_id). This is the tenancy resolution key.
+    phone_number_id: Mapped[str] = mapped_column(
+        String(64), nullable=False, unique=True, index=True
+    )
+    # WABA (WhatsApp Business Account) id. Templates + embedded-signup
+    # operations are WABA-scoped.
+    waba_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    # Encrypted credentials. See services/secrets.encrypt_secrets.
+    provider_config: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Onboarding source: "manual" (ops wrote the row directly) or
+    # "embedded_signup" (owner went through Meta's OAuth flow).
+    source: Mapped[str] = mapped_column(String(32), default="manual")
+    # Channel-level health — "healthy" | "pending" | "token_expired" | "error".
+    health_status: Mapped[str] = mapped_column(String(32), default="pending")
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc, onupdate=_now_utc
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "business_id", "phone_number", name="uq_channel_business_phone"
+        ),
+        Index("ix_whatsapp_channels_business", "business_id"),
+    )
+
+
+# ---------------------------------------------------------------------------
 # Message Template (Meta-approved outbound templates)
 # ---------------------------------------------------------------------------
 
