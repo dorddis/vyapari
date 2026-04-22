@@ -67,9 +67,35 @@ async def relay_expiry_loop():
 # Lifespan (startup + shutdown)
 # ---------------------------------------------------------------------------
 
+_WHATSAPP_REQUIRED_ENV = (
+    "WHATSAPP_ACCESS_TOKEN",
+    "WHATSAPP_PHONE_NUMBER_ID",
+    "META_APP_SECRET",
+)
+
+
+def _validate_whatsapp_config() -> None:
+    """Fail fast if CHANNEL_MODE=whatsapp but core creds are unset.
+
+    Without these we'd either build a malformed Graph URL (when
+    WHATSAPP_PHONE_NUMBER_ID is empty, see config.py:76-79) or silently
+    fail signature verification on every inbound webhook.
+    """
+    if config.CHANNEL_MODE != "whatsapp":
+        return
+    missing = [name for name in _WHATSAPP_REQUIRED_ENV if not getattr(config, name, "")]
+    if missing:
+        raise RuntimeError(
+            "CHANNEL_MODE=whatsapp requires these env vars: "
+            f"{', '.join(missing)}. Set them in .env or switch to "
+            "CHANNEL_MODE=web_clone for the demo path."
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Starting Vyapari Agent...")
+    _validate_whatsapp_config()
     await init_db()
     await state.init_state()
     log.info(f"Owner seeded: {config.DEFAULT_OWNER_NAME} ({config.DEFAULT_OWNER_PHONE})")
