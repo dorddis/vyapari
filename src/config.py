@@ -72,6 +72,10 @@ WHATSAPP_ENABLED = os.getenv("WHATSAPP_ENABLED", "false").lower() == "true"
 WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "")
 WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
 WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID", "")
+# WABA (WhatsApp Business Account) id. Template APIs are scoped to a
+# WABA, not a phone number. Phase 3 moves this into whatsapp_channels
+# per-tenant; Phase 2 keeps it global for the single-tenant deployment.
+WHATSAPP_BUSINESS_ACCOUNT_ID = os.getenv("WHATSAPP_BUSINESS_ACCOUNT_ID", "")
 WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
 WHATSAPP_API_URL = (
     f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"

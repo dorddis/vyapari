@@ -1,0 +1,304 @@
+"""Message template catalog service.
+
+Three responsibilities:
+
+1. **Register** a template with Meta (`POST /{waba_id}/message_templates`).
+   We store it locally as PENDING; Meta review typically takes hours but
+   can run days for MARKETING templates.
+2. **Sync** template status from Meta (`GET /{waba_id}/message_templates`).
+   Called on a schedule and after an `/account_updates` webhook (Phase 4).
+   Upserts by (business_id, name, language), updating status /
+   rejected_reason / meta_template_id / last_synced_at.
+3. **Lookup** — `get_approved_template(business_id, name, language)` — the
+   read path the outbound dispatcher uses before sending outside the
+   24-hour customer-service window.
+
+Meta API surface we talk to (all at `graph.facebook.com/{api_version}/{waba_id}`):
+- `GET /message_templates` — paginated list, returns everything regardless
+  of status.
+- `POST /message_templates` — submits a new one for review.
+- `DELETE /message_templates?name=<n>` — future (Phase 3+).
+
+The module intentionally does NOT send user-facing messages. For that,
+see `services/outbound.py`, which loads approved templates via
+`get_approved_template` and hands them to `channels.whatsapp.send_template`.
+"""
+
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
+
+import httpx
+from sqlalchemy import select
+
+import config
+from database import get_session_factory
+from db_models import MessageTemplate
+from models.enums import MessageTemplateStatus
+
+log = logging.getLogger("vyapari.services.templates")
+
+
+# ---------------------------------------------------------------------------
+# Graph API endpoints
+# ---------------------------------------------------------------------------
+
+def _templates_endpoint(waba_id: str) -> str:
+    """URL for /{waba_id}/message_templates."""
+    return f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{waba_id}/message_templates"
+
+
+def _resolve_waba_id(business_id: str) -> str:
+    """Return the WABA id to use for Graph API calls.
+
+    Phase 2: single-tenant, reads from config.WHATSAPP_BUSINESS_ACCOUNT_ID.
+    Phase 3 will look it up in whatsapp_channels by business_id.
+    """
+    waba_id = config.WHATSAPP_BUSINESS_ACCOUNT_ID
+    if not waba_id:
+        raise RuntimeError(
+            "WHATSAPP_BUSINESS_ACCOUNT_ID is not configured. Set it in "
+            "your .env or pass an explicit waba_id when multi-tenant."
+        )
+    return waba_id
+
+
+# ---------------------------------------------------------------------------
+# Meta status mapping
+# ---------------------------------------------------------------------------
+
+# Meta returns template statuses in uppercase; we normalize to our enum.
+_META_STATUS_MAP: dict[str, str] = {
+    "APPROVED": MessageTemplateStatus.APPROVED.value,
+    "PENDING": MessageTemplateStatus.PENDING.value,
+    "REJECTED": MessageTemplateStatus.REJECTED.value,
+    "PAUSED": MessageTemplateStatus.PAUSED.value,
+    "DISABLED": MessageTemplateStatus.DISABLED.value,
+    # Treat in-appeal / under-review as PENDING so the dispatcher won't
+    # use them until Meta gives a verdict.
+    "PENDING_DELETION": MessageTemplateStatus.PAUSED.value,
+    "IN_APPEAL": MessageTemplateStatus.PENDING.value,
+}
+
+
+def _normalize_status(meta_status: str | None) -> str:
+    if not meta_status:
+        return MessageTemplateStatus.PENDING.value
+    return _META_STATUS_MAP.get(meta_status.upper(), MessageTemplateStatus.PENDING.value)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+async def register_template(
+    business_id: str,
+    name: str,
+    language: str,
+    components: list[dict],
+    category: str = "UTILITY",
+) -> MessageTemplate:
+    """Submit a template to Meta for approval and persist as PENDING locally.
+
+    Re-registering an existing (business_id, name, language) updates the
+    local row — Meta rejects duplicate registrations, but the caller may
+    want to bump components after a rejection and re-submit.
+
+    Raises httpx.HTTPError on non-2xx Meta responses (bad access token,
+    malformed components, rate limit). The caller should log + surface.
+    """
+    waba_id = _resolve_waba_id(business_id)
+    payload = {
+        "name": name,
+        "category": category.upper(),
+        "language": language,
+        "components": components,
+    }
+    headers = {
+        "Authorization": f"Bearer {config.WHATSAPP_ACCESS_TOKEN}",
+        "Content-Type": "application/json",
+    }
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            _templates_endpoint(waba_id),
+            json=payload,
+            headers=headers,
+            timeout=30,
+        )
+    resp.raise_for_status()
+    body = resp.json()
+
+    meta_template_id = body.get("id")
+    status_raw = body.get("status")  # e.g. "PENDING"
+    status = _normalize_status(status_raw)
+
+    # Upsert locally.
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        stmt = select(MessageTemplate).where(
+            MessageTemplate.business_id == business_id,
+            MessageTemplate.name == name,
+            MessageTemplate.language == language,
+        )
+        row = (await session.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            row = MessageTemplate(
+                business_id=business_id,
+                name=name,
+                language=language,
+                category=category.upper(),
+                components=components,
+                status=status,
+                meta_template_id=meta_template_id,
+                last_synced_at=datetime.now(timezone.utc),
+            )
+            session.add(row)
+        else:
+            row.category = category.upper()
+            row.components = components
+            row.status = status
+            row.rejected_reason = None
+            row.meta_template_id = meta_template_id
+            row.last_synced_at = datetime.now(timezone.utc)
+        await session.commit()
+        await session.refresh(row)
+        log.info(
+            "Registered template %s / %s for %s -> status=%s (meta_id=%s)",
+            name, language, business_id, status, meta_template_id,
+        )
+        return row
+
+
+async def sync_templates(business_id: str) -> int:
+    """Fetch all templates from Meta and upsert into the local table.
+
+    Returns the number of rows upserted. Called on a schedule + after
+    `message_template_status_update` webhooks (Phase 4).
+
+    Raises httpx.HTTPError on Meta failure. Local DB writes are best-effort
+    per-row; one bad row does not abort the whole sync.
+    """
+    waba_id = _resolve_waba_id(business_id)
+    headers = {"Authorization": f"Bearer {config.WHATSAPP_ACCESS_TOKEN}"}
+
+    upserted = 0
+    cursor: str | None = None
+    async with httpx.AsyncClient() as client:
+        while True:
+            params: dict = {"limit": 100}
+            if cursor:
+                params["after"] = cursor
+            resp = await client.get(
+                _templates_endpoint(waba_id),
+                params=params,
+                headers=headers,
+                timeout=30,
+            )
+            resp.raise_for_status()
+            body = resp.json()
+            data = body.get("data") or []
+            for meta_tmpl in data:
+                try:
+                    await _upsert_from_meta(business_id, meta_tmpl)
+                    upserted += 1
+                except Exception:
+                    log.exception(
+                        "Failed to upsert template %s for %s",
+                        meta_tmpl.get("name"), business_id,
+                    )
+            cursor = (body.get("paging") or {}).get("cursors", {}).get("after")
+            next_link = (body.get("paging") or {}).get("next")
+            if not next_link or not cursor:
+                break
+    log.info("Synced %d templates for business %s", upserted, business_id)
+    return upserted
+
+
+async def _upsert_from_meta(business_id: str, meta_tmpl: dict) -> None:
+    """Upsert a single Meta template dict into the local table."""
+    name = meta_tmpl.get("name")
+    language = meta_tmpl.get("language")
+    if not name or not language:
+        return
+    components = meta_tmpl.get("components") or []
+    status = _normalize_status(meta_tmpl.get("status"))
+    category = (meta_tmpl.get("category") or "UTILITY").upper()
+    meta_template_id = meta_tmpl.get("id")
+    # Meta includes rejection reasons in the `quality_score` / `reason`
+    # field depending on the API version; store whichever is present.
+    rejected_reason = (
+        meta_tmpl.get("reason")
+        or meta_tmpl.get("rejected_reason")
+        or None
+    )
+
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        stmt = select(MessageTemplate).where(
+            MessageTemplate.business_id == business_id,
+            MessageTemplate.name == name,
+            MessageTemplate.language == language,
+        )
+        row = (await session.execute(stmt)).scalar_one_or_none()
+        now = datetime.now(timezone.utc)
+        if row is None:
+            row = MessageTemplate(
+                business_id=business_id,
+                name=name,
+                language=language,
+                category=category,
+                components=components,
+                status=status,
+                rejected_reason=rejected_reason,
+                meta_template_id=meta_template_id,
+                last_synced_at=now,
+            )
+            session.add(row)
+        else:
+            row.category = category
+            row.components = components
+            row.status = status
+            row.rejected_reason = rejected_reason
+            row.meta_template_id = meta_template_id
+            row.last_synced_at = now
+        await session.commit()
+
+
+async def get_approved_template(
+    business_id: str,
+    name: str,
+    language: str = "en",
+) -> MessageTemplate | None:
+    """Return the approved template row, or None if not found / not approved.
+
+    The outbound dispatcher uses this before sending outside the 24-hour
+    customer-service window. A None return means "cannot reach this
+    customer right now" — the caller must decide whether to raise, queue,
+    or pick a fallback template.
+    """
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        stmt = select(MessageTemplate).where(
+            MessageTemplate.business_id == business_id,
+            MessageTemplate.name == name,
+            MessageTemplate.language == language,
+            MessageTemplate.status == MessageTemplateStatus.APPROVED.value,
+        )
+        row = (await session.execute(stmt)).scalar_one_or_none()
+        return row
+
+
+async def list_templates(
+    business_id: str,
+    *,
+    status: str | None = None,
+) -> list[MessageTemplate]:
+    """Read helper for admin panels / scripts. Optionally filter by status."""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        stmt = select(MessageTemplate).where(MessageTemplate.business_id == business_id)
+        if status:
+            stmt = stmt.where(MessageTemplate.status == status)
+        return list((await session.execute(stmt)).scalars().all())
