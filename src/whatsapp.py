@@ -1,8 +1,27 @@
-"""WhatsApp Cloud API client - send and receive messages."""
+"""WhatsApp Cloud API client - send and receive messages.
 
+Multi-tenant note (Phase 3.4+): per-request credentials are resolved
+through a `ContextVar` rather than always reading the module-level
+`WHATSAPP_ACCESS_TOKEN` / `WHATSAPP_PHONE_NUMBER_ID` env values.
+
+- `WhatsAppAdapter.__init__` can be given per-tenant credentials. The
+  adapter calls `use_tenant(access_token, phone_number_id)` as a
+  context manager around each outbound send so this module's helpers
+  see the tenant-scoped values.
+- When the contextvar is unset (legacy single-tenant mode, test
+  harnesses that bypass the adapter, scripts that call the helpers
+  directly), the functions fall back to the module-level env values.
+
+The contextvar is task-local — two concurrent asyncio tasks serving
+different tenants never see each other's creds.
+"""
+
+import contextlib
 import logging
 import re
+from contextvars import ContextVar
 from urllib.parse import urlparse
+from typing import NamedTuple
 
 import httpx
 from config import (
@@ -13,6 +32,56 @@ from config import (
 )
 
 log = logging.getLogger("vyapari.whatsapp")
+
+
+class _TenantCreds(NamedTuple):
+    """Per-request WhatsApp Cloud API credentials."""
+    access_token: str
+    phone_number_id: str
+
+
+# ContextVar carrying per-request (access_token, phone_number_id). None
+# means "no tenant resolved — fall back to module-level env values".
+_current_tenant: ContextVar[_TenantCreds | None] = ContextVar(
+    "vyapari.whatsapp.tenant", default=None,
+)
+
+
+def _access_token() -> str:
+    t = _current_tenant.get()
+    return t.access_token if t else WHATSAPP_ACCESS_TOKEN
+
+
+def _phone_number_id() -> str:
+    t = _current_tenant.get()
+    return t.phone_number_id if t else WHATSAPP_PHONE_NUMBER_ID
+
+
+def _messages_url() -> str:
+    """Return the /{phone_number_id}/messages endpoint for the current tenant."""
+    pnid = _phone_number_id()
+    return (
+        f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
+        f"/{pnid}/messages"
+    )
+
+
+@contextlib.contextmanager
+def use_tenant(access_token: str, phone_number_id: str):
+    """Context manager that binds per-request Cloud API credentials.
+
+    Caller pattern (inside the WhatsApp adapter):
+        with use_tenant(tok, pnid):
+            await whatsapp.send_text(to, text)
+
+    Nested `use_tenant` calls are safe — ContextVar is task-local and
+    restored on exit.
+    """
+    token = _current_tenant.set(_TenantCreds(access_token, phone_number_id))
+    try:
+        yield
+    finally:
+        _current_tenant.reset(token)
 
 # Hosts we'll attach the Graph bearer token to when downloading media.
 # Meta's pre-signed media URLs today live on lookaside.fbsbx.com; we
@@ -38,12 +107,14 @@ def _is_trusted_media_host(url: str) -> bool:
 def _media_endpoint() -> str:
     """URL for /{phone_number_id}/media upload.
 
-    Derived at call-time so a missing WHATSAPP_PHONE_NUMBER_ID env var
-    surfaces as a clean 404 rather than a silent URL corruption.
+    Resolved at call-time from the current tenant context (Phase 3.4+).
+    Falls back to the module-level env value for legacy / unscoped
+    callers. A missing id surfaces as a clean 404 rather than silent
+    URL corruption.
     """
     return (
         f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
-        f"/{WHATSAPP_PHONE_NUMBER_ID}/media"
+        f"/{_phone_number_id()}/media"
     )
 
 
@@ -85,10 +156,10 @@ async def _post_message(payload: dict, timeout: int = 30) -> dict:
     """
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            WHATSAPP_API_URL,
+            _messages_url(),
             json=payload,
             headers={
-                "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
+                "Authorization": f"Bearer {_access_token()}",
                 "Content-Type": "application/json",
             },
             timeout=timeout,
@@ -204,7 +275,7 @@ async def upload_media(
             _media_endpoint(),
             files=files,
             data=data,
-            headers={"Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}"},
+            headers={"Authorization": f"Bearer {_access_token()}"},
             timeout=60,
         )
         resp.raise_for_status()
@@ -551,7 +622,7 @@ async def download_media(media_id: str) -> tuple[bytes, str]:
     Raises httpx.HTTPStatusError on failure.
     """
     graph_base = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
-    headers = {"Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}"}
+    headers = {"Authorization": f"Bearer {_access_token()}"}
 
     async with httpx.AsyncClient() as client:
         # Step 1: get the download URL

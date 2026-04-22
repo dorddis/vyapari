@@ -21,6 +21,7 @@ from whatsapp import (
     send_text as legacy_send_text,
     send_typing_on as legacy_send_typing_on,
     upload_media as legacy_upload_media,
+    use_tenant,
 )
 
 log = logging.getLogger("vyapari.channels.whatsapp")
@@ -35,7 +36,33 @@ def _extract_response_msg_id(response: dict) -> str:
 
 
 class WhatsAppAdapter(ChannelAdapter):
-    """Adapter that talks to WhatsApp Cloud API."""
+    """Adapter that talks to WhatsApp Cloud API.
+
+    Multi-tenant: pass `access_token` + `phone_number_id` at construction
+    to bind the adapter to a specific tenant. Each outbound send wraps
+    the whatsapp.py helpers in `use_tenant(...)` so per-request creds
+    land in the contextvar without leaking across tasks.
+
+    Legacy single-tenant deployments can construct without args — the
+    whatsapp.py helpers then fall back to module-level env values.
+    """
+
+    def __init__(
+        self,
+        *,
+        access_token: str | None = None,
+        phone_number_id: str | None = None,
+    ) -> None:
+        self._access_token = access_token
+        self._phone_number_id = phone_number_id
+
+    def _tenant_ctx(self):
+        """Return the per-call credentials context manager, or a no-op
+        if the adapter is unbound (falls back to module-level env)."""
+        if self._access_token and self._phone_number_id:
+            return use_tenant(self._access_token, self._phone_number_id)
+        import contextlib as _cl
+        return _cl.nullcontext()
 
     async def _send_and_log(
         self,
@@ -55,7 +82,11 @@ class WhatsAppAdapter(ChannelAdapter):
         """
         role = await self._resolve_outbound_role(to)
         try:
-            response = await coro
+            # Bind per-tenant credentials (if any) around the await so
+            # whatsapp.py helpers read this adapter's access_token +
+            # phone_number_id instead of the global env values.
+            with self._tenant_ctx():
+                response = await coro
         except GraphAPIError as exc:
             external_msg_id = f"failed-{uuid4().hex[:12]}"
             log.error(
@@ -141,11 +172,12 @@ class WhatsAppAdapter(ChannelAdapter):
         base_mime = mime_type.split(";")[0].strip()
         ext = base_mime.split("/")[-1] if "/" in base_mime else "bin"
         try:
-            upload_result = await legacy_upload_media(
-                file_bytes=audio_bytes,
-                mime_type=mime_type,
-                filename=f"voice.{ext}",
-            )
+            with self._tenant_ctx():
+                upload_result = await legacy_upload_media(
+                    file_bytes=audio_bytes,
+                    mime_type=mime_type,
+                    filename=f"voice.{ext}",
+                )
         except Exception as exc:
             # Upload failures (network, 4xx, bad mime) come back as either
             # httpx.HTTPStatusError or ValueError. Route through the same
@@ -333,7 +365,8 @@ class WhatsAppAdapter(ChannelAdapter):
         if not replying_to_msg_id:
             return None
         try:
-            await legacy_send_typing_on(replying_to_msg_id)
+            with self._tenant_ctx():
+                await legacy_send_typing_on(replying_to_msg_id)
         except Exception:
             # Typing indicator is a UX nicety; a failure must never block
             # the actual reply. Log and move on.
@@ -341,7 +374,8 @@ class WhatsAppAdapter(ChannelAdapter):
         return None
 
     async def mark_read(self, msg_id: str) -> None:
-        await legacy_mark_read(msg_id)
+        with self._tenant_ctx():
+            await legacy_mark_read(msg_id)
 
     def extract_status_updates(self, payload: dict) -> list[dict]:
         """Parse the `statuses[]` array Meta delivers for outbound messages.
