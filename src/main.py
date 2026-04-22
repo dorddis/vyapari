@@ -244,7 +244,7 @@ async def _process_and_reply(msg: IncomingMessage):
     """Process a message through the router and send the reply."""
     try:
         channel = get_channel()
-        await channel.send_typing(msg.wa_id)
+        await channel.send_typing(msg.wa_id, msg.msg_id)
         await channel.mark_read(msg.msg_id)
 
         # Voice note: download from WhatsApp if needed, then transcribe

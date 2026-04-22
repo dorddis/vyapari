@@ -11,8 +11,14 @@ from services.message_log import log_message
 from whatsapp import (
     mark_read as legacy_mark_read,
     send_audio as legacy_send_audio,
+    send_contacts as legacy_send_contacts,
     send_image as legacy_send_image,
+    send_interactive_buttons as legacy_send_interactive_buttons,
+    send_interactive_list as legacy_send_interactive_list,
+    send_location as legacy_send_location,
+    send_template as legacy_send_template,
     send_text as legacy_send_text,
+    send_typing_on as legacy_send_typing_on,
     upload_media as legacy_upload_media,
 )
 
@@ -132,10 +138,32 @@ class WhatsAppAdapter(ChannelAdapter):
         footer: str | None = None,
         image_url: str | None = None,
     ) -> str:
-        # Fallback text rendering until interactive payload sender is added.
+        """Send interactive reply buttons. Max 3 per Meta spec (enforced in helper)."""
+        header_media: dict | None = None
+        if image_url:
+            header_media = {"type": "image", "image": {"link": image_url}}
+        response = await legacy_send_interactive_buttons(
+            to=to,
+            body=body,
+            buttons=buttons,
+            header_text=header if not header_media else None,
+            header_media=header_media,
+            footer=footer,
+        )
+        external_msg_id = _extract_response_msg_id(response)
+        role = await self._resolve_outbound_role(to)
         titles = ", ".join(button.get("title", "Option") for button in buttons)
-        text = body if titles == "" else f"{body}\n\nOptions: {titles}"
-        return await self.send_text(to, text)
+        await log_message(
+            wa_id=to,
+            role=role,
+            direction="outbound",
+            channel="whatsapp",
+            text=f"{body}\n[buttons: {titles}]" if titles else body,
+            msg_type="interactive_buttons",
+            external_msg_id=external_msg_id,
+            images=[image_url] if image_url else [],
+        )
+        return external_msg_id
 
     async def send_list(
         self,
@@ -146,12 +174,32 @@ class WhatsAppAdapter(ChannelAdapter):
         header: str | None = None,
         footer: str | None = None,
     ) -> str:
+        """Send interactive list picker. Max 10 rows across sections."""
+        response = await legacy_send_interactive_list(
+            to=to,
+            body=body,
+            button_text=button_text,
+            sections=sections,
+            header_text=header,
+            footer=footer,
+        )
+        external_msg_id = _extract_response_msg_id(response)
+        role = await self._resolve_outbound_role(to)
         rows: list[str] = []
         for section in sections:
             for row in section.get("rows", []):
                 rows.append(row.get("title", "Item"))
-        text = body if not rows else f"{body}\n\n{button_text}: {', '.join(rows[:10])}"
-        return await self.send_text(to, text)
+        preview = f"{body}\n[{button_text}: {', '.join(rows[:10])}]" if rows else body
+        await log_message(
+            wa_id=to,
+            role=role,
+            direction="outbound",
+            channel="whatsapp",
+            text=preview,
+            msg_type="interactive_list",
+            external_msg_id=external_msg_id,
+        )
+        return external_msg_id
 
     async def send_location(
         self,
@@ -161,14 +209,56 @@ class WhatsAppAdapter(ChannelAdapter):
         name: str = "",
         address: str = "",
     ) -> str:
+        response = await legacy_send_location(
+            to=to,
+            latitude=latitude,
+            longitude=longitude,
+            name=name or None,
+            address=address or None,
+        )
+        external_msg_id = _extract_response_msg_id(response)
+        role = await self._resolve_outbound_role(to)
         label = name or "Location"
         text = f"{label}: {latitude}, {longitude}"
         if address:
             text = f"{text}\n{address}"
-        return await self.send_text(to, text)
+        await log_message(
+            wa_id=to,
+            role=role,
+            direction="outbound",
+            channel="whatsapp",
+            text=text,
+            msg_type="location",
+            external_msg_id=external_msg_id,
+        )
+        return external_msg_id
 
     async def send_contact(self, to: str, name: str, phone: str) -> str:
-        return await self.send_text(to, f"Contact: {name} ({phone})")
+        """Send a single contact card. Minimal shape: name + WORK phone."""
+        parts = (name or "").strip().split(None, 1)
+        first_name = parts[0] if parts else name
+        last_name = parts[1] if len(parts) > 1 else ""
+        contact: dict = {
+            "name": {
+                "formatted_name": name,
+                "first_name": first_name,
+                **({"last_name": last_name} if last_name else {}),
+            },
+            "phones": [{"phone": phone, "type": "WORK"}],
+        }
+        response = await legacy_send_contacts(to, [contact])
+        external_msg_id = _extract_response_msg_id(response)
+        role = await self._resolve_outbound_role(to)
+        await log_message(
+            wa_id=to,
+            role=role,
+            direction="outbound",
+            channel="whatsapp",
+            text=f"Contact: {name} ({phone})",
+            msg_type="contact",
+            external_msg_id=external_msg_id,
+        )
+        return external_msg_id
 
     async def send_template(
         self,
@@ -178,17 +268,70 @@ class WhatsAppAdapter(ChannelAdapter):
         params: list[str] | None = None,
         image_url: str | None = None,
     ) -> str:
-        params_text = ", ".join(params or [])
-        text = f"Template[{template_name}/{language}]"
-        if params_text:
-            text = f"{text}: {params_text}"
-        return await self.send_text(to, text)
+        """Send an approved template.
+
+        `params` are positional body parameters that Meta substitutes into
+        {{1}}, {{2}}, ... in the approved template body. `image_url` adds
+        an image header component. For richer templates (video/document
+        headers, button-param substitution) use the whatsapp.send_template
+        helper directly with the full `components` list — Phase 2's
+        dispatcher will replace this adapter method with a catalog-aware
+        one that reads the approved schema from the DB.
+        """
+        components: list[dict] = []
+        if image_url:
+            components.append(
+                {
+                    "type": "header",
+                    "parameters": [{"type": "image", "image": {"link": image_url}}],
+                }
+            )
+        if params:
+            components.append(
+                {
+                    "type": "body",
+                    "parameters": [{"type": "text", "text": str(p)} for p in params],
+                }
+            )
+        response = await legacy_send_template(
+            to=to,
+            name=template_name,
+            language=language,
+            components=components or None,
+        )
+        external_msg_id = _extract_response_msg_id(response)
+        role = await self._resolve_outbound_role(to)
+        params_str = ", ".join(params) if params else ""
+        preview = f"Template[{template_name}/{language}]"
+        if params_str:
+            preview = f"{preview}: {params_str}"
+        await log_message(
+            wa_id=to,
+            role=role,
+            direction="outbound",
+            channel="whatsapp",
+            text=preview,
+            msg_type="template",
+            external_msg_id=external_msg_id,
+            images=[image_url] if image_url else [],
+        )
+        return external_msg_id
 
     async def send_typing(self, to: str, replying_to_msg_id: str | None = None) -> None:
-        # Cloud API v21 typing indicators POST to the messages endpoint
-        # with {"status":"read", "message_id": <wamid>, "typing_indicator":
-        # {"type":"text"}}. Wiring that up is a Phase 1 task (needs
-        # main.py to thread msg.msg_id through). For now, no-op.
+        """Show typing dots for the given inbound message.
+
+        Cloud API v21+ keys typing indicators off the inbound message_id.
+        If the caller didn't pass one (legacy callers / web-clone-only
+        code paths), we no-op rather than send a malformed request.
+        """
+        if not replying_to_msg_id:
+            return None
+        try:
+            await legacy_send_typing_on(replying_to_msg_id)
+        except Exception:
+            # Typing indicator is a UX nicety; a failure must never block
+            # the actual reply. Log and move on.
+            log.warning("Typing indicator failed for %s", to, exc_info=True)
         return None
 
     async def mark_read(self, msg_id: str) -> None:
