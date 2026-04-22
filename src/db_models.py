@@ -533,6 +533,31 @@ class MessageTemplate(Base):
 
 
 # ---------------------------------------------------------------------------
+# Processed Messages (DB-backed idempotency)
+# ---------------------------------------------------------------------------
+
+class ProcessedMessage(Base):
+    """Idempotency key store for inbound webhooks.
+
+    Replaces the in-memory _processed_msg_ids dict on state.py with a
+    cross-replica safe table. Meta retries webhooks with the same wamid
+    for ~24 hours; we dedup on (business_id, wa_msg_id) so two replicas
+    cannot both dispatch the same message.
+
+    Rows older than 48h are cleaned up by the relay-expiry worker (or
+    a separate cron if ops wants to decouple).
+    """
+
+    __tablename__ = "processed_messages"
+
+    business_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    wa_msg_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    processed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now_utc, index=True,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Message Log (Rahul's existing table - kept for web clone compat)
 # ---------------------------------------------------------------------------
 

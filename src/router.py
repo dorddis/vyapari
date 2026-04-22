@@ -316,10 +316,10 @@ async def dispatch(msg: IncomingMessage) -> str | None:
     and by web_api.py's REST endpoints.
     """
     # Idempotency check
-    if await state.is_message_processed(msg.msg_id):
+    if await state.is_message_processed(msg.msg_id, business_id=msg.business_id or None):
         log.info(f"Duplicate message {msg.msg_id}, skipping")
         return None
-    await state.mark_message_processed(msg.msg_id)
+    await state.mark_message_processed(msg.msg_id, business_id=msg.business_id or None)
 
     # Route first, THEN create records only for customers (not staff)
     decision = await route_message(msg)

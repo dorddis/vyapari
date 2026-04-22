@@ -10,6 +10,7 @@ Idempotency and relay locks stay in-memory (they are ephemeral by nature).
 """
 
 import asyncio
+import contextlib
 import logging
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
@@ -64,16 +65,60 @@ def _session():
     return get_session_factory()()
 
 
-# Ephemeral in-memory stores (not worth persisting)
+# In-process L1 cache for idempotency. The authoritative store is the
+# `processed_messages` DB table (Phase 3.6) — this cache just avoids a
+# round-trip on the overwhelmingly common "first time I've seen this
+# wamid" case. Never rely on it alone; the DB UNIQUE constraint is the
+# actual cross-replica dedup guarantee.
 _processed_msg_ids: dict[str, float] = {}
 _MAX_PROCESSED_IDS = 10000
 _locks: dict[str, asyncio.Lock] = {}
 
 
 def _get_lock(key: str) -> asyncio.Lock:
+    """Async lock by key, scoped to this process.
+
+    For multi-replica deployments (Phase 4+), promote hot-path lookups
+    (relay sessions, token rotation) to Postgres advisory locks via
+    `async with _pg_advisory_lock(key)` — see helper below.
+    """
     if key not in _locks:
         _locks[key] = asyncio.Lock()
     return _locks[key]
+
+
+@contextlib.asynccontextmanager
+async def _pg_advisory_lock(key: str):
+    """Postgres advisory lock keyed by a string.
+
+    Works cross-replica. On SQLite (local dev / tests), falls back to
+    the in-process asyncio.Lock — equivalent semantics for single-process
+    mode, which is all SQLite supports anyway.
+
+    The key is hashed to a 64-bit signed int as Postgres requires. We
+    use two 32-bit halves of the SHA-1 digest to minimize collision in
+    a 64-bit signed space.
+    """
+    if config.DATABASE_URL.startswith("sqlite"):
+        async with _get_lock(key):
+            yield
+        return
+
+    import hashlib as _hashlib
+    digest = _hashlib.sha1(key.encode("utf-8")).digest()
+    # two 32-bit ints, packed as (key1, key2) for pg_advisory_lock(int, int)
+    k1 = int.from_bytes(digest[:4], "big", signed=True)
+    k2 = int.from_bytes(digest[4:8], "big", signed=True)
+
+    from sqlalchemy import text
+    async with _session() as s:
+        try:
+            await s.execute(text("SELECT pg_advisory_lock(:k1, :k2)"),
+                            {"k1": k1, "k2": k2})
+            yield
+        finally:
+            await s.execute(text("SELECT pg_advisory_unlock(:k1, :k2)"),
+                            {"k1": k1, "k2": k2})
 
 
 # ---------------------------------------------------------------------------
@@ -179,20 +224,83 @@ def _setup_to_record(row: M.OwnerSetup) -> OwnerSetupRecord:
 
 
 # ---------------------------------------------------------------------------
-# Idempotency (stays in-memory — ephemeral by design)
+# Idempotency — DB-backed for cross-replica safety, L1 in-memory cache.
 # ---------------------------------------------------------------------------
 
-async def is_message_processed(msg_id: str) -> bool:
-    return msg_id in _processed_msg_ids
+def _cache_key(business_id: str, msg_id: str) -> str:
+    """Composite key for the L1 cache — keeps two tenants' colliding
+    wamids independent."""
+    return f"{business_id}:{msg_id}"
 
 
-async def mark_message_processed(msg_id: str) -> None:
+async def is_message_processed(msg_id: str, *, business_id: str | None = None) -> bool:
+    """Has this wamid already been dispatched?
+
+    Checks the L1 in-process cache first (zero DB round-trip on the
+    first-time-seen common case), then the `processed_messages` table.
+    business_id is optional for back-compat; callers that have it
+    provide it so two tenants with colliding wamids don't dedup against
+    each other. Defaults to the bootstrap id for legacy call sites.
+    """
+    biz = business_id or _default_biz_for_seed()
+    key = _cache_key(biz, msg_id)
+    if key in _processed_msg_ids:
+        return True
+    async with _session() as s:
+        result = await s.execute(
+            select(M.ProcessedMessage.wa_msg_id).where(
+                M.ProcessedMessage.business_id == biz,
+                M.ProcessedMessage.wa_msg_id == msg_id,
+            )
+        )
+        return result.scalar_one_or_none() is not None
+
+
+async def mark_message_processed(msg_id: str, *, business_id: str | None = None) -> None:
+    """Record that a wamid has been dispatched.
+
+    Insert into `processed_messages`; swallow the IntegrityError if
+    another replica raced us (the row already exists with this
+    (business_id, wa_msg_id) PK — that's the exact cross-replica
+    guarantee we want).
+    """
     import time
-    _processed_msg_ids[msg_id] = time.time()
+    biz = business_id or _default_biz_for_seed()
+    key = _cache_key(biz, msg_id)
+    _processed_msg_ids[key] = time.time()
     if len(_processed_msg_ids) > _MAX_PROCESSED_IDS:
         sorted_ids = sorted(_processed_msg_ids.items(), key=lambda x: x[1])
         for old_id, _ in sorted_ids[: len(sorted_ids) - _MAX_PROCESSED_IDS]:
             del _processed_msg_ids[old_id]
+
+    async with _session() as s:
+        try:
+            s.add(M.ProcessedMessage(
+                business_id=biz, wa_msg_id=msg_id, processed_at=_now(),
+            ))
+            await s.commit()
+        except Exception:
+            # Race with another replica; the other insert won. That's
+            # the point of the DB-backed dedup. Rollback and continue.
+            await s.rollback()
+
+
+async def cleanup_processed_messages(older_than_hours: int = 48) -> int:
+    """Delete processed_messages rows older than the threshold.
+
+    Called by the relay-expiry worker (or a dedicated cron). Returns
+    number of rows removed. 48h default comfortably exceeds Meta's
+    typical retry window.
+    """
+    cutoff = _now() - timedelta(hours=older_than_hours)
+    async with _session() as s:
+        result = await s.execute(
+            delete(M.ProcessedMessage).where(
+                M.ProcessedMessage.processed_at < cutoff
+            )
+        )
+        await s.commit()
+        return int(result.rowcount or 0)
 
 
 # ---------------------------------------------------------------------------
