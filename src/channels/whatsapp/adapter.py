@@ -390,6 +390,11 @@ class WhatsAppAdapter(ChannelAdapter):
             return None
 
         msg = messages[0]
+        # Defensive: Meta is supposed to send a dict, but mis-sent array
+        # entries (e.g. a raw string) must not crash the webhook handler.
+        if not isinstance(msg, dict):
+            log.warning("messages[0] was %s, not a dict; dropping", type(msg).__name__)
+            return None
         wa_id = msg.get("from")
         msg_id = msg.get("id")
         msg_type_raw = msg.get("type", "text")
@@ -477,6 +482,25 @@ class WhatsAppAdapter(ChannelAdapter):
                 msg_id=msg_id,
                 msg_type=MessageType.STICKER,
                 media_id=sticker.get("id"),
+                sender_name=sender_name,
+            )
+
+        if msg_type_raw == "button":
+            # Template quick-reply buttons arrive as type="button" with
+            # msg.button = {"payload": "...", "text": "..."}. Different
+            # shape from interactive.button_reply (which is type=interactive)
+            # but same semantics — a tap on a pre-defined choice. Normalize
+            # both into MessageType.BUTTON_REPLY.
+            btn = msg.get("button") or {}
+            title = btn.get("text") or ""
+            payload_val = btn.get("payload") or ""
+            return IncomingMessage(
+                wa_id=wa_id,
+                text=title or None,
+                msg_id=msg_id,
+                msg_type=MessageType.BUTTON_REPLY,
+                button_reply_id=payload_val or None,
+                button_reply_title=title or None,
                 sender_name=sender_name,
             )
 
