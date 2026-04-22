@@ -47,12 +47,41 @@ def _media_endpoint() -> str:
     )
 
 
+class GraphAPIError(Exception):
+    """Raised when the Graph API response indicates a send failure.
+
+    Triggered by: HTTP status >= 400, OR a 2xx response carrying an
+    `error` object (Meta sometimes sneaks errors into 200 responses
+    for deprecated edge cases — we treat either as failure).
+
+    Attributes:
+        status_code: HTTP status Meta returned (0 if network/parse error).
+        code: Meta's numeric error code (e.g. 131047 for 24h-window).
+        body: The full response body dict (may be empty on parse failure).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int = 0,
+        code: int | None = None,
+        body: dict | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.code = code
+        self.body = body or {}
+
+
 async def _post_message(payload: dict, timeout: int = 30) -> dict:
     """POST a pre-built Graph API payload to /messages and return the JSON.
 
     Shared by every outbound message type (text, media, interactive,
-    template, typing). All payloads must include `messaging_product`,
-    `to`, and `type` fields (Meta rejects otherwise).
+    template, typing). Raises GraphAPIError on non-2xx OR on any 2xx
+    response that carries an `error` object — previously these failures
+    were silently returned as opaque JSON, so the caller logged a
+    synthetic-id "success" row for a message the customer never saw.
     """
     async with httpx.AsyncClient() as client:
         resp = await client.post(
@@ -64,7 +93,37 @@ async def _post_message(payload: dict, timeout: int = 30) -> dict:
             },
             timeout=timeout,
         )
-        return resp.json()
+
+    # Parse the body defensively — Meta sometimes returns HTML on edge auth
+    # errors. We don't want a JSON-parse crash to mask the real status.
+    try:
+        body = resp.json() if resp.content else {}
+    except Exception:
+        body = {"raw_text": resp.text}
+
+    if resp.status_code >= 400:
+        err = body.get("error") if isinstance(body, dict) else None
+        code = (err or {}).get("code") if isinstance(err, dict) else None
+        raise GraphAPIError(
+            f"Graph API {resp.status_code}: {err or body}",
+            status_code=resp.status_code,
+            code=code,
+            body=body if isinstance(body, dict) else {},
+        )
+
+    # 2xx with an error object — rare, but e.g. certain template policy
+    # rejections arrive this way. Surface them explicitly.
+    if isinstance(body, dict) and "error" in body:
+        err = body["error"]
+        code = err.get("code") if isinstance(err, dict) else None
+        raise GraphAPIError(
+            f"Graph API error in {resp.status_code} response: {err}",
+            status_code=resp.status_code,
+            code=code,
+            body=body,
+        )
+
+    return body
 
 
 def _build_media_obj(*, media_id: str | None, link: str | None) -> dict:
@@ -76,44 +135,26 @@ def _build_media_obj(*, media_id: str | None, link: str | None) -> dict:
 
 async def send_text(to: str, text: str) -> dict:
     """Send a text message to a WhatsApp number."""
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "text",
-        "text": {"body": text},
-    }
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            WHATSAPP_API_URL,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
-                "Content-Type": "application/json",
-            },
-            timeout=30,
-        )
-        return resp.json()
+    return await _post_message(
+        {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "text",
+            "text": {"body": text},
+        }
+    )
 
 
 async def send_image(to: str, image_url: str, caption: str = "") -> dict:
-    """Send an image message."""
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "image",
-        "image": {"link": image_url, "caption": caption},
-    }
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            WHATSAPP_API_URL,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
-                "Content-Type": "application/json",
-            },
-            timeout=30,
-        )
-        return resp.json()
+    """Send an image message by public URL."""
+    return await _post_message(
+        {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "image",
+            "image": {"link": image_url, "caption": caption},
+        }
+    )
 
 
 async def send_audio(to: str, media_id: str | None = None, link: str | None = None) -> dict:
@@ -122,27 +163,15 @@ async def send_audio(to: str, media_id: str | None = None, link: str | None = No
     Pass either `media_id` (after uploading bytes via `upload_media`) or
     `link` (publicly reachable URL). WhatsApp voice notes must be OGG/Opus.
     """
-    if not media_id and not link:
-        raise ValueError("send_audio requires either media_id or link")
-
-    audio_obj: dict = {"id": media_id} if media_id else {"link": link}
-    payload = {
-        "messaging_product": "whatsapp",
-        "to": to,
-        "type": "audio",
-        "audio": audio_obj,
-    }
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            WHATSAPP_API_URL,
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {WHATSAPP_ACCESS_TOKEN}",
-                "Content-Type": "application/json",
-            },
-            timeout=30,
-        )
-        return resp.json()
+    audio_obj = _build_media_obj(media_id=media_id, link=link)
+    return await _post_message(
+        {
+            "messaging_product": "whatsapp",
+            "to": to,
+            "type": "audio",
+            "audio": audio_obj,
+        }
+    )
 
 
 _MIME_FORMAT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9!#$&.+\-^_]*/[A-Za-z0-9!#$&.+\-^_]+(\s*;\s*[A-Za-z0-9!#$&.+\-^_]+=[A-Za-z0-9!#$&.+\-^_]+)*$")
@@ -361,25 +390,48 @@ async def send_interactive_list(
     header_text: str | None = None,
     footer: str | None = None,
 ) -> dict:
-    """Send interactive list (max 10 rows across sections).
+    """Send interactive list.
 
-    Each section: {"title": str, "rows": [{"id": str, "title": str, "description": str|None}, ...]}.
+    Meta's limits: max 10 sections, max 10 rows total across all sections,
+    row titles <= 24 chars, descriptions <= 72 chars.
+
+    Sections are rebuilt explicitly to strip any extra keys a caller may
+    have attached — the Graph API rejects unknown fields.
     """
     if not sections:
         raise ValueError("send_interactive_list requires at least one section")
+    if len(sections) > 10:
+        raise ValueError(f"WhatsApp allows max 10 list sections, got {len(sections)}")
     total_rows = sum(len(s.get("rows", [])) for s in sections)
+    if total_rows == 0:
+        raise ValueError("send_interactive_list requires at least one row across sections")
     if total_rows > 10:
         raise ValueError(f"WhatsApp allows max 10 list rows total, got {total_rows}")
+
+    rebuilt_sections: list[dict] = []
+    for sec in sections:
+        rebuilt_rows: list[dict] = []
+        for row in sec.get("rows", []):
+            row_out = {"id": row["id"], "title": row["title"]}
+            if row.get("description"):
+                row_out["description"] = row["description"]
+            rebuilt_rows.append(row_out)
+        sec_out: dict = {"rows": rebuilt_rows}
+        if sec.get("title"):
+            sec_out["title"] = sec["title"]
+        rebuilt_sections.append(sec_out)
+
     interactive: dict = {
         "type": "list",
         "body": {"text": body},
         "action": {
             "button": button_text,
-            "sections": sections,
+            "sections": rebuilt_sections,
         },
     }
-    if header_text:
-        interactive["header"] = {"type": "text", "text": header_text}
+    header = _build_interactive_header(header_text=header_text)
+    if header:
+        interactive["header"] = header
     if footer:
         interactive["footer"] = {"text": footer}
     return await _post_message(
@@ -413,8 +465,9 @@ async def send_interactive_cta_url(
             },
         },
     }
-    if header_text:
-        interactive["header"] = {"type": "text", "text": header_text}
+    header = _build_interactive_header(header_text=header_text)
+    if header:
+        interactive["header"] = header
     if footer:
         interactive["footer"] = {"text": footer}
     return await _post_message(

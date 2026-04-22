@@ -178,6 +178,17 @@ async def verify_webhook(
     return Response(content="Forbidden", status_code=403)
 
 
+def _safe_log_field(value: str | None) -> str:
+    """Strip CR/LF from strings we interpolate into log lines.
+
+    Prevents a log-injection edge case if a bad actor (or a corrupt Meta
+    response) smuggles `\\r\\n` into a value we format with `%s`.
+    """
+    if not value:
+        return ""
+    return str(value).replace("\r", "").replace("\n", "")
+
+
 async def _record_status_event(
     external_msg_id: str,
     status: str,
@@ -200,7 +211,9 @@ async def _record_status_event(
         )
     except Exception:
         log.exception(
-            "Failed to record status %s for %s", status, external_msg_id
+            "Failed to record status %s for %s",
+            _safe_log_field(status),
+            _safe_log_field(external_msg_id),
         )
 
 

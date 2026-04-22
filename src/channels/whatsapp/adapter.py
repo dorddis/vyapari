@@ -9,6 +9,7 @@ from channels.base import ChannelAdapter
 from models import IncomingMessage, MessageType
 from services.message_log import log_message
 from whatsapp import (
+    GraphAPIError,
     mark_read as legacy_mark_read,
     send_audio as legacy_send_audio,
     send_contacts as legacy_send_contacts,
@@ -35,6 +36,62 @@ def _extract_response_msg_id(response: dict) -> str:
 
 class WhatsAppAdapter(ChannelAdapter):
     """Adapter that talks to WhatsApp Cloud API."""
+
+    async def _send_and_log(
+        self,
+        coro,
+        *,
+        to: str,
+        log_text: str,
+        msg_type: str,
+        images: list[str] | None = None,
+    ) -> str:
+        """Run a Graph API send coroutine, log success or failure.
+
+        Returns the external message id. On GraphAPIError, returns a
+        synthetic `failed-<hex>` id and stamps the log row's meta with
+        the error code/body so a later audit can tell what went wrong.
+        Never re-raises — the caller (agent, main.py) should keep going.
+        """
+        role = await self._resolve_outbound_role(to)
+        try:
+            response = await coro
+        except GraphAPIError as exc:
+            external_msg_id = f"failed-{uuid4().hex[:12]}"
+            log.error(
+                "Graph API send failed for %s (code=%s, http=%s): %s",
+                to, exc.code, exc.status_code, exc,
+            )
+            await log_message(
+                wa_id=to,
+                role=role,
+                direction="outbound",
+                channel="whatsapp",
+                text=log_text,
+                msg_type=msg_type,
+                external_msg_id=external_msg_id,
+                images=images or [],
+                meta={
+                    "delivery_failed": True,
+                    "error_code": exc.code,
+                    "error_http_status": exc.status_code,
+                    "error_body": exc.body,
+                },
+            )
+            return external_msg_id
+
+        external_msg_id = _extract_response_msg_id(response)
+        await log_message(
+            wa_id=to,
+            role=role,
+            direction="outbound",
+            channel="whatsapp",
+            text=log_text,
+            msg_type=msg_type,
+            external_msg_id=external_msg_id,
+            images=images or [],
+        )
+        return external_msg_id
 
     async def _resolve_outbound_role(self, to: str) -> str:
         """Return the logical sender role for a message we're about to send.
@@ -64,70 +121,63 @@ class WhatsAppAdapter(ChannelAdapter):
             return "bot"
 
     async def send_text(self, to: str, text: str) -> str:
-        response = await legacy_send_text(to, text)
-        external_msg_id = _extract_response_msg_id(response)
-        role = await self._resolve_outbound_role(to)
-
-        await log_message(
-            wa_id=to,
-            role=role,
-            direction="outbound",
-            channel="whatsapp",
-            text=text,
-            msg_type="text",
-            external_msg_id=external_msg_id,
+        return await self._send_and_log(
+            legacy_send_text(to, text),
+            to=to, log_text=text, msg_type="text",
         )
-        return external_msg_id
 
     async def send_image(self, to: str, image_url: str, caption: str = "") -> str:
-        response = await legacy_send_image(to, image_url, caption)
-        external_msg_id = _extract_response_msg_id(response)
-        role = await self._resolve_outbound_role(to)
-
-        await log_message(
-            wa_id=to,
-            role=role,
-            direction="outbound",
-            channel="whatsapp",
-            text=caption or "Image",
-            msg_type="image",
-            external_msg_id=external_msg_id,
+        return await self._send_and_log(
+            legacy_send_image(to, image_url, caption),
+            to=to, log_text=caption or "Image", msg_type="image",
             images=[image_url],
         )
-        return external_msg_id
 
     async def send_audio(
         self, to: str, audio_bytes: bytes, mime_type: str = "audio/ogg; codecs=opus"
     ) -> str:
-        """Upload the audio bytes to Meta's media endpoint, then send by media_id.
-
-        Two Graph API calls: upload -> /media, send -> /messages. Returns the
-        Cloud API message id so the caller can correlate status callbacks.
-        """
+        """Upload the audio bytes to Meta's media endpoint, then send by media_id."""
         # Trim any codec parameters for the filename hint; the mime_type stays full.
         base_mime = mime_type.split(";")[0].strip()
         ext = base_mime.split("/")[-1] if "/" in base_mime else "bin"
-        upload_result = await legacy_upload_media(
-            file_bytes=audio_bytes,
-            mime_type=mime_type,
-            filename=f"voice.{ext}",
-        )
+        try:
+            upload_result = await legacy_upload_media(
+                file_bytes=audio_bytes,
+                mime_type=mime_type,
+                filename=f"voice.{ext}",
+            )
+        except Exception as exc:
+            # Upload failures (network, 4xx, bad mime) come back as either
+            # httpx.HTTPStatusError or ValueError. Route through the same
+            # failure-log path as downstream send errors.
+            log.error("upload_media failed for audio to %s: %s", to, exc)
+            external_msg_id = f"failed-{uuid4().hex[:12]}"
+            role = await self._resolve_outbound_role(to)
+            await log_message(
+                wa_id=to, role=role, direction="outbound", channel="whatsapp",
+                text="Audio", msg_type="audio",
+                external_msg_id=external_msg_id,
+                meta={"delivery_failed": True, "error_stage": "upload_media",
+                      "error_message": str(exc)},
+            )
+            return external_msg_id
         media_id = upload_result.get("id")
         if not media_id:
-            raise RuntimeError(f"upload_media returned no id: {upload_result}")
-
-        response = await legacy_send_audio(to, media_id=media_id)
-        external_msg_id = _extract_response_msg_id(response)
-        await log_message(
-            wa_id=to,
-            role="bot",
-            direction="outbound",
-            channel="whatsapp",
-            text="Audio",
-            msg_type="audio",
-            external_msg_id=external_msg_id,
+            log.error("upload_media returned no id for audio to %s: %s", to, upload_result)
+            external_msg_id = f"failed-{uuid4().hex[:12]}"
+            role = await self._resolve_outbound_role(to)
+            await log_message(
+                wa_id=to, role=role, direction="outbound", channel="whatsapp",
+                text="Audio", msg_type="audio",
+                external_msg_id=external_msg_id,
+                meta={"delivery_failed": True, "error_stage": "upload_media",
+                      "error_body": upload_result},
+            )
+            return external_msg_id
+        return await self._send_and_log(
+            legacy_send_audio(to, media_id=media_id),
+            to=to, log_text="Audio", msg_type="audio",
         )
-        return external_msg_id
 
     async def send_buttons(
         self,
@@ -142,28 +192,21 @@ class WhatsAppAdapter(ChannelAdapter):
         header_media: dict | None = None
         if image_url:
             header_media = {"type": "image", "image": {"link": image_url}}
-        response = await legacy_send_interactive_buttons(
-            to=to,
-            body=body,
-            buttons=buttons,
-            header_text=header if not header_media else None,
-            header_media=header_media,
-            footer=footer,
-        )
-        external_msg_id = _extract_response_msg_id(response)
-        role = await self._resolve_outbound_role(to)
         titles = ", ".join(button.get("title", "Option") for button in buttons)
-        await log_message(
-            wa_id=to,
-            role=role,
-            direction="outbound",
-            channel="whatsapp",
-            text=f"{body}\n[buttons: {titles}]" if titles else body,
+        return await self._send_and_log(
+            legacy_send_interactive_buttons(
+                to=to,
+                body=body,
+                buttons=buttons,
+                header_text=header if not header_media else None,
+                header_media=header_media,
+                footer=footer,
+            ),
+            to=to,
+            log_text=f"{body}\n[buttons: {titles}]" if titles else body,
             msg_type="interactive_buttons",
-            external_msg_id=external_msg_id,
             images=[image_url] if image_url else [],
         )
-        return external_msg_id
 
     async def send_list(
         self,
@@ -175,31 +218,22 @@ class WhatsAppAdapter(ChannelAdapter):
         footer: str | None = None,
     ) -> str:
         """Send interactive list picker. Max 10 rows across sections."""
-        response = await legacy_send_interactive_list(
-            to=to,
-            body=body,
-            button_text=button_text,
-            sections=sections,
-            header_text=header,
-            footer=footer,
-        )
-        external_msg_id = _extract_response_msg_id(response)
-        role = await self._resolve_outbound_role(to)
         rows: list[str] = []
         for section in sections:
             for row in section.get("rows", []):
                 rows.append(row.get("title", "Item"))
         preview = f"{body}\n[{button_text}: {', '.join(rows[:10])}]" if rows else body
-        await log_message(
-            wa_id=to,
-            role=role,
-            direction="outbound",
-            channel="whatsapp",
-            text=preview,
-            msg_type="interactive_list",
-            external_msg_id=external_msg_id,
+        return await self._send_and_log(
+            legacy_send_interactive_list(
+                to=to,
+                body=body,
+                button_text=button_text,
+                sections=sections,
+                header_text=header,
+                footer=footer,
+            ),
+            to=to, log_text=preview, msg_type="interactive_list",
         )
-        return external_msg_id
 
     async def send_location(
         self,
@@ -209,29 +243,20 @@ class WhatsAppAdapter(ChannelAdapter):
         name: str = "",
         address: str = "",
     ) -> str:
-        response = await legacy_send_location(
-            to=to,
-            latitude=latitude,
-            longitude=longitude,
-            name=name or None,
-            address=address or None,
-        )
-        external_msg_id = _extract_response_msg_id(response)
-        role = await self._resolve_outbound_role(to)
         label = name or "Location"
         text = f"{label}: {latitude}, {longitude}"
         if address:
             text = f"{text}\n{address}"
-        await log_message(
-            wa_id=to,
-            role=role,
-            direction="outbound",
-            channel="whatsapp",
-            text=text,
-            msg_type="location",
-            external_msg_id=external_msg_id,
+        return await self._send_and_log(
+            legacy_send_location(
+                to=to,
+                latitude=latitude,
+                longitude=longitude,
+                name=name or None,
+                address=address or None,
+            ),
+            to=to, log_text=text, msg_type="location",
         )
-        return external_msg_id
 
     async def send_contact(self, to: str, name: str, phone: str) -> str:
         """Send a single contact card. Minimal shape: name + WORK phone."""
@@ -246,19 +271,10 @@ class WhatsAppAdapter(ChannelAdapter):
             },
             "phones": [{"phone": phone, "type": "WORK"}],
         }
-        response = await legacy_send_contacts(to, [contact])
-        external_msg_id = _extract_response_msg_id(response)
-        role = await self._resolve_outbound_role(to)
-        await log_message(
-            wa_id=to,
-            role=role,
-            direction="outbound",
-            channel="whatsapp",
-            text=f"Contact: {name} ({phone})",
-            msg_type="contact",
-            external_msg_id=external_msg_id,
+        return await self._send_and_log(
+            legacy_send_contacts(to, [contact]),
+            to=to, log_text=f"Contact: {name} ({phone})", msg_type="contact",
         )
-        return external_msg_id
 
     async def send_template(
         self,
@@ -272,11 +288,8 @@ class WhatsAppAdapter(ChannelAdapter):
 
         `params` are positional body parameters that Meta substitutes into
         {{1}}, {{2}}, ... in the approved template body. `image_url` adds
-        an image header component. For richer templates (video/document
-        headers, button-param substitution) use the whatsapp.send_template
-        helper directly with the full `components` list — Phase 2's
-        dispatcher will replace this adapter method with a catalog-aware
-        one that reads the approved schema from the DB.
+        an image header component. Phase 2's dispatcher replaces this with
+        a catalog-aware one that reads the approved schema from the DB.
         """
         components: list[dict] = []
         if image_url:
@@ -293,29 +306,22 @@ class WhatsAppAdapter(ChannelAdapter):
                     "parameters": [{"type": "text", "text": str(p)} for p in params],
                 }
             )
-        response = await legacy_send_template(
-            to=to,
-            name=template_name,
-            language=language,
-            components=components or None,
-        )
-        external_msg_id = _extract_response_msg_id(response)
-        role = await self._resolve_outbound_role(to)
         params_str = ", ".join(params) if params else ""
         preview = f"Template[{template_name}/{language}]"
         if params_str:
             preview = f"{preview}: {params_str}"
-        await log_message(
-            wa_id=to,
-            role=role,
-            direction="outbound",
-            channel="whatsapp",
-            text=preview,
+        return await self._send_and_log(
+            legacy_send_template(
+                to=to,
+                name=template_name,
+                language=language,
+                components=components or None,
+            ),
+            to=to,
+            log_text=preview,
             msg_type="template",
-            external_msg_id=external_msg_id,
             images=[image_url] if image_url else [],
         )
-        return external_msg_id
 
     async def send_typing(self, to: str, replying_to_msg_id: str | None = None) -> None:
         """Show typing dots for the given inbound message.
@@ -380,8 +386,9 @@ class WhatsAppAdapter(ChannelAdapter):
         except (KeyError, IndexError, TypeError):
             return None
 
-        # Status updates (delivered/read/failed/sent) have `statuses`, not `messages`.
-        # These get logged in Phase 1; for now they're safely dropped.
+        # Status updates (delivered/read/failed/sent) have `statuses`, not
+        # `messages`. They're parsed separately by extract_status_updates,
+        # which the webhook handler calls in addition to this function.
         if "statuses" in value:
             return None
 
@@ -494,6 +501,10 @@ class WhatsAppAdapter(ChannelAdapter):
             btn = msg.get("button") or {}
             title = btn.get("text") or ""
             payload_val = btn.get("payload") or ""
+            # If both are empty, nothing actionable downstream — drop it.
+            if not title and not payload_val:
+                log.info("Dropping empty quick-reply button from %s", wa_id)
+                return None
             return IncomingMessage(
                 wa_id=wa_id,
                 text=title or None,
@@ -525,7 +536,11 @@ class WhatsAppAdapter(ChannelAdapter):
                 lr = interactive.get("list_reply") or {}
                 title = lr.get("title") or ""
                 desc = lr.get("description") or ""
-                text = f"{title}: {desc}" if desc else (title or None)
+                # Guard the "" + "Y" edge case that would produce ": Y".
+                if title and desc:
+                    text = f"{title}: {desc}"
+                else:
+                    text = title or desc or None
                 return IncomingMessage(
                     wa_id=wa_id,
                     text=text,
@@ -564,13 +579,15 @@ class WhatsAppAdapter(ChannelAdapter):
 
         if msg_type_raw == "contacts":
             cards = msg.get("contacts") or []
-            if not cards:
+            if not cards or not isinstance(cards[0], dict):
                 return None
             first = cards[0]
-            name_obj = first.get("name") or {}
-            formatted = name_obj.get("formatted_name") or name_obj.get("first_name") or "Contact"
+            name_obj = first.get("name") if isinstance(first.get("name"), dict) else {}
+            formatted = (name_obj or {}).get("formatted_name") or (name_obj or {}).get("first_name") or "Contact"
             phones = first.get("phones") or []
-            phone = phones[0].get("phone") if phones else None
+            phone = None
+            if phones and isinstance(phones[0], dict):
+                phone = phones[0].get("phone")
             suffix = f" ({phone})" if phone else ""
             return IncomingMessage(
                 wa_id=wa_id,

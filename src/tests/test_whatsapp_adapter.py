@@ -197,6 +197,78 @@ def test_status_payloads_return_none_from_extract_message() -> None:
         assert adapter.extract_message(payload) is None, key
 
 
+def test_extract_quick_reply_with_empty_payload_drops() -> None:
+    """Template quick-reply with empty text+payload has no actionable
+    intent downstream — drop instead of dispatching a null-everything msg."""
+    adapter = WhatsAppAdapter()
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [{
+            "id": "1",
+            "changes": [{
+                "value": {
+                    "messages": [{
+                        "from": "919999",
+                        "id": "wamid.empty-btn",
+                        "type": "button",
+                        "button": {"payload": "", "text": ""},
+                    }],
+                },
+                "field": "messages",
+            }],
+        }],
+    }
+    assert adapter.extract_message(payload) is None
+
+
+def test_extract_list_reply_description_only_no_leading_colon() -> None:
+    """Empty title + non-empty description must not produce a ': desc'
+    leading-colon artifact in the text field."""
+    adapter = WhatsAppAdapter()
+    payload = {
+        "object": "whatsapp_business_account",
+        "entry": [{
+            "id": "1",
+            "changes": [{
+                "value": {
+                    "messages": [{
+                        "from": "919999",
+                        "id": "wamid.empty-title",
+                        "type": "interactive",
+                        "interactive": {
+                            "type": "list_reply",
+                            "list_reply": {
+                                "id": "row1",
+                                "title": "",
+                                "description": "Just a description",
+                            },
+                        },
+                    }],
+                },
+                "field": "messages",
+            }],
+        }],
+    }
+    msg = adapter.extract_message(payload)
+    assert msg is not None
+    assert msg.text == "Just a description"
+
+
+def test_extract_contacts_with_non_dict_entries_safe() -> None:
+    """Defense-in-depth: webhook signature is valid but Meta sent junk."""
+    adapter = WhatsAppAdapter()
+    bad_shapes = [
+        {"messages": [{"from": "9", "id": "wamid.x", "type": "contacts", "contacts": ["not-a-dict"]}]},
+        {"messages": [{"from": "9", "id": "wamid.y", "type": "contacts", "contacts": [{"name": "string-not-dict", "phones": [{"phone": "+91"}]}]}]},
+        {"messages": [{"from": "9", "id": "wamid.z", "type": "contacts", "contacts": [{"name": {"formatted_name": "Raj"}, "phones": ["not-a-dict"]}]}]},
+    ]
+    for value in bad_shapes:
+        payload = {"object": "whatsapp_business_account", "entry": [{"id": "1", "changes": [{"value": value, "field": "messages"}]}]}
+        # Must not raise; either parses safely or returns None.
+        result = adapter.extract_message(payload)
+        assert result is None or hasattr(result, "wa_id")
+
+
 def test_malformed_payloads_never_raise() -> None:
     adapter = WhatsAppAdapter()
     for payload in (

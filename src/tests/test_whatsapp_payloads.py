@@ -25,10 +25,18 @@ import whatsapp
 # ---------------------------------------------------------------------------
 
 class _MockResponse:
-    status_code = 200
-
-    def __init__(self, body: dict | None = None) -> None:
-        self._body = body or {"messages": [{"id": "wamid.mock-1"}]}
+    def __init__(
+        self,
+        body: dict | None = None,
+        *,
+        status_code: int = 200,
+    ) -> None:
+        self._body = body if body is not None else {"messages": [{"id": "wamid.mock-1"}]}
+        self.status_code = status_code
+        # `content` is truthy when the body is non-empty — _post_message
+        # short-circuits to {} on empty content.
+        self.content = b"{}" if self._body else b""
+        self.text = ""
 
     def json(self) -> dict:
         return self._body
@@ -38,10 +46,15 @@ class _MockResponse:
 
 
 class _Captor:
-    """Recording mock — collects everything AsyncClient.post was given."""
+    """Recording mock — collects everything AsyncClient.post was given.
+
+    By default every call returns a success response (200 + messages[0].id).
+    Use `next_response` to override the next response (for error-path tests).
+    """
 
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.next_response: _MockResponse | None = None
 
     async def __aenter__(self):
         return self
@@ -59,6 +72,9 @@ class _Captor:
                 "timeout": kwargs.get("timeout"),
             }
         )
+        if self.next_response is not None:
+            resp, self.next_response = self.next_response, None
+            return resp
         if kwargs.get("files"):
             return _MockResponse({"id": "media-mock-1"})
         return _MockResponse()
@@ -223,8 +239,49 @@ async def test_send_interactive_list_payload(captor: _Captor) -> None:
 @pytest.mark.asyncio
 async def test_send_interactive_list_rejects_too_many_rows() -> None:
     too_many = [{"title": "S", "rows": [{"id": f"r{i}", "title": str(i)} for i in range(11)]}]
-    with pytest.raises(ValueError, match="max 10"):
+    with pytest.raises(ValueError, match="max 10 list rows"):
         await whatsapp.send_interactive_list("919999", "p", "v", too_many)
+
+
+@pytest.mark.asyncio
+async def test_send_interactive_list_rejects_too_many_sections() -> None:
+    too_many = [{"title": f"S{i}", "rows": [{"id": f"r{i}", "title": str(i)}]} for i in range(11)]
+    with pytest.raises(ValueError, match="max 10 list sections"):
+        await whatsapp.send_interactive_list("919999", "p", "v", too_many)
+
+
+@pytest.mark.asyncio
+async def test_send_interactive_list_rejects_zero_rows() -> None:
+    with pytest.raises(ValueError, match="at least one row"):
+        await whatsapp.send_interactive_list(
+            "919999", "p", "v", [{"title": "S", "rows": []}]
+        )
+
+
+@pytest.mark.asyncio
+async def test_send_interactive_list_strips_unknown_keys(captor: _Captor) -> None:
+    """Extra fields on rows must not be forwarded to Meta (rejects unknown keys)."""
+    await whatsapp.send_interactive_list(
+        "919999",
+        "pick",
+        "View",
+        [
+            {
+                "title": "Section",
+                "extra_section_key": "ignored",
+                "rows": [
+                    {
+                        "id": "r1",
+                        "title": "Row1",
+                        "description": "Desc",
+                        "evil_key": "should not appear",
+                    }
+                ],
+            }
+        ],
+    )
+    row = captor.calls[0]["json"]["interactive"]["action"]["sections"][0]["rows"][0]
+    assert set(row.keys()) == {"id", "title", "description"}, row
 
 
 @pytest.mark.asyncio
@@ -462,3 +519,103 @@ async def test_adapter_send_typing_swallows_upstream_errors(monkeypatch) -> None
     # Should return None silently — no exception bubbles.
     result = await WhatsAppAdapter().send_typing("919999", "wamid.x")
     assert result is None
+
+
+# ---------------------------------------------------------------------------
+# Error surfacing — _post_message must raise on Meta 4xx/5xx, and
+# WhatsAppAdapter must record the failure instead of silently logging a
+# success row. (The entire "I sent it but the customer never saw it"
+# debugging nightmare this commit family exists to prevent.)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_post_message_raises_on_4xx() -> None:
+    cap = _Captor()
+    cap.next_response = _MockResponse(
+        {"error": {"code": 131047, "message": "Re-engagement message",
+                   "title": "More than 24 hours"}},
+        status_code=400,
+    )
+    with patch("whatsapp.httpx.AsyncClient", lambda: cap):
+        with pytest.raises(whatsapp.GraphAPIError) as exc_info:
+            await whatsapp.send_text("919999", "hi")
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.code == 131047
+
+
+@pytest.mark.asyncio
+async def test_post_message_raises_on_2xx_with_error_body() -> None:
+    """Some Meta edge cases return an error inside a 200 response."""
+    cap = _Captor()
+    cap.next_response = _MockResponse(
+        {"error": {"code": 131026, "title": "Message Undeliverable"}},
+        status_code=200,
+    )
+    with patch("whatsapp.httpx.AsyncClient", lambda: cap):
+        with pytest.raises(whatsapp.GraphAPIError) as exc_info:
+            await whatsapp.send_text("919999", "hi")
+    assert exc_info.value.code == 131026
+
+
+@pytest.mark.asyncio
+async def test_post_message_success_on_well_formed_200() -> None:
+    cap = _Captor()
+    with patch("whatsapp.httpx.AsyncClient", lambda: cap):
+        body = await whatsapp.send_text("919999", "hi")
+    assert body == {"messages": [{"id": "wamid.mock-1"}]}
+
+
+@pytest.mark.asyncio
+async def test_adapter_records_failure_on_graph_error(monkeypatch) -> None:
+    """Adapter's _send_and_log must log a delivery_failed row and return
+    a `failed-*` external_msg_id when Meta rejects the send."""
+    from channels.whatsapp.adapter import WhatsAppAdapter
+
+    captured_log: dict = {}
+
+    async def capture_log(**kwargs):
+        captured_log.update(kwargs)
+
+    async def bot_role(self, to):
+        return "bot"
+
+    monkeypatch.setattr("channels.whatsapp.adapter.log_message", capture_log)
+    monkeypatch.setattr(WhatsAppAdapter, "_resolve_outbound_role", bot_role)
+
+    cap = _Captor()
+    cap.next_response = _MockResponse(
+        {"error": {"code": 131047, "message": "24h window expired"}},
+        status_code=400,
+    )
+    with patch("whatsapp.httpx.AsyncClient", lambda: cap):
+        external_msg_id = await WhatsAppAdapter().send_text("919999", "hi")
+
+    assert external_msg_id.startswith("failed-"), external_msg_id
+    assert captured_log["msg_type"] == "text"
+    assert captured_log["meta"]["delivery_failed"] is True
+    assert captured_log["meta"]["error_code"] == 131047
+    assert captured_log["meta"]["error_http_status"] == 400
+
+
+@pytest.mark.asyncio
+async def test_adapter_success_path_records_real_msg_id(monkeypatch) -> None:
+    """Sanity: success path still logs with Meta's real wamid, no failed- prefix."""
+    from channels.whatsapp.adapter import WhatsAppAdapter
+
+    captured_log: dict = {}
+
+    async def capture_log(**kwargs):
+        captured_log.update(kwargs)
+
+    async def bot_role(self, to):
+        return "bot"
+
+    monkeypatch.setattr("channels.whatsapp.adapter.log_message", capture_log)
+    monkeypatch.setattr(WhatsAppAdapter, "_resolve_outbound_role", bot_role)
+
+    cap = _Captor()  # default success
+    with patch("whatsapp.httpx.AsyncClient", lambda: cap):
+        external_msg_id = await WhatsAppAdapter().send_text("919999", "hi")
+
+    assert external_msg_id == "wamid.mock-1"
+    assert not captured_log.get("meta", {}).get("delivery_failed")
