@@ -36,6 +36,7 @@ import config
 from database import get_session_factory
 from db_models import MessageTemplate
 from models.enums import MessageTemplateStatus
+from whatsapp import GraphAPIError
 
 log = logging.getLogger("vyapari.services.templates")
 
@@ -75,10 +76,18 @@ _META_STATUS_MAP: dict[str, str] = {
     "REJECTED": MessageTemplateStatus.REJECTED.value,
     "PAUSED": MessageTemplateStatus.PAUSED.value,
     "DISABLED": MessageTemplateStatus.DISABLED.value,
-    # Treat in-appeal / under-review as PENDING so the dispatcher won't
-    # use them until Meta gives a verdict.
-    "PENDING_DELETION": MessageTemplateStatus.PAUSED.value,
+    # "scheduled for deletion" — we must not send these. Map to DISABLED
+    # so the dispatcher treats them as unavailable (not "Meta may re-
+    # enable", which is the PAUSED semantic).
+    "PENDING_DELETION": MessageTemplateStatus.DISABLED.value,
+    "DELETED": MessageTemplateStatus.DISABLED.value,
+    # Meta's policy-review states. Keep as PENDING so the dispatcher
+    # waits for a verdict; IN_APPEAL is "customer is challenging a
+    # rejection," still not sendable.
     "IN_APPEAL": MessageTemplateStatus.PENDING.value,
+    # Limit exceeded = Meta paused submissions; treat as PAUSED so ops
+    # can see it and intervene, rather than silently hiding it.
+    "LIMIT_EXCEEDED": MessageTemplateStatus.PAUSED.value,
 }
 
 
@@ -86,6 +95,39 @@ def _normalize_status(meta_status: str | None) -> str:
     if not meta_status:
         return MessageTemplateStatus.PENDING.value
     return _META_STATUS_MAP.get(meta_status.upper(), MessageTemplateStatus.PENDING.value)
+
+
+def _raise_if_graph_error(resp: httpx.Response, context: str) -> dict:
+    """Parse a Graph response; raise GraphAPIError on error, else return body.
+
+    Mirrors whatsapp._post_message's contract so ops + logs get the
+    same structured error shape whether the Graph call came from the
+    channel adapter or from services/templates.
+    """
+    try:
+        body = resp.json() if resp.content else {}
+    except Exception:
+        body = {"raw_text": resp.text}
+
+    if resp.status_code >= 400:
+        err = body.get("error") if isinstance(body, dict) else None
+        code = (err or {}).get("code") if isinstance(err, dict) else None
+        raise GraphAPIError(
+            f"Graph API {context} failed {resp.status_code}: {err or body}",
+            status_code=resp.status_code,
+            code=code,
+            body=body if isinstance(body, dict) else {},
+        )
+    if isinstance(body, dict) and "error" in body:
+        err = body["error"]
+        code = err.get("code") if isinstance(err, dict) else None
+        raise GraphAPIError(
+            f"Graph API {context} error in {resp.status_code}: {err}",
+            status_code=resp.status_code,
+            code=code,
+            body=body,
+        )
+    return body
 
 
 # ---------------------------------------------------------------------------
@@ -127,8 +169,7 @@ async def register_template(
             headers=headers,
             timeout=30,
         )
-    resp.raise_for_status()
-    body = resp.json()
+    body = _raise_if_graph_error(resp, f"register_template({name}/{language})")
 
     meta_template_id = body.get("id")
     status_raw = body.get("status")  # e.g. "PENDING"
@@ -196,8 +237,7 @@ async def sync_templates(business_id: str) -> int:
                 headers=headers,
                 timeout=30,
             )
-            resp.raise_for_status()
-            body = resp.json()
+            body = _raise_if_graph_error(resp, "sync_templates")
             data = body.get("data") or []
             for meta_tmpl in data:
                 try:
@@ -208,10 +248,16 @@ async def sync_templates(business_id: str) -> int:
                         "Failed to upsert template %s for %s",
                         meta_tmpl.get("name"), business_id,
                     )
-            cursor = (body.get("paging") or {}).get("cursors", {}).get("after")
-            next_link = (body.get("paging") or {}).get("next")
-            if not next_link or not cursor:
+            next_cursor = (body.get("paging") or {}).get("cursors", {}).get("after")
+            # Stop conditions:
+            # - No cursor -> last page.
+            # - next_cursor == cursor -> Meta returned the same cursor we
+            #   just sent (stuck pagination); break to prevent infinite loop.
+            # `paging.next` is intentionally ignored: cursor advancement is
+            # the only authoritative signal.
+            if not next_cursor or next_cursor == cursor:
                 break
+            cursor = next_cursor
     log.info("Synced %d templates for business %s", upserted, business_id)
     return upserted
 

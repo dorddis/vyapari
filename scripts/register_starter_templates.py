@@ -62,35 +62,36 @@ async def main() -> int:
         return 0
 
     await init_db()
-    failures: list[tuple[str, str, str]] = []
-    for t in templates:
-        name, lang = t["name"], t["language"]
-        try:
-            row = await register_template(
-                business_id=args.business_id,
-                name=name,
-                language=lang,
-                components=t["components"],
-                category=t["category"],
-            )
-            print(f"[PASS] {name} / {lang} -> status={row.status} "
-                  f"meta_id={row.meta_template_id}")
-        except Exception as exc:
-            print(f"[FAIL] {name} / {lang}: {exc}", file=sys.stderr)
-            failures.append((name, lang, str(exc)))
+    try:
+        failures: list[tuple[str, str, str]] = []
+        for t in templates:
+            name, lang = t["name"], t["language"]
+            try:
+                row = await register_template(
+                    business_id=args.business_id,
+                    name=name,
+                    language=lang,
+                    components=t["components"],
+                    category=t["category"],
+                )
+                print(f"[PASS] {name} / {lang} -> status={row.status} "
+                      f"meta_id={row.meta_template_id}")
+            except Exception as exc:
+                print(f"[FAIL] {name} / {lang}: {exc}", file=sys.stderr)
+                failures.append((name, lang, str(exc)))
 
-    await close_db()
+        if failures:
+            print(f"\n{len(failures)} template(s) failed to register:")
+            for name, lang, err in failures:
+                print(f"  - {name} / {lang}: {err}")
+            return 1
 
-    if failures:
-        print(f"\n{len(failures)} template(s) failed to register:")
-        for name, lang, err in failures:
-            print(f"  - {name} / {lang}: {err}")
-        return 1
-
-    print(f"\nAll {len(templates)} template(s) submitted. Run "
-          "`scripts/sync_templates.py --business-id ...` after a few "
-          "minutes to pull Meta's verdict.")
-    return 0
+        print(f"\nAll {len(templates)} template(s) submitted. Run "
+              "`scripts/sync_templates.py --business-id ...` after a few "
+              "minutes to pull Meta's verdict.")
+        return 0
+    finally:
+        await close_db()
 
 
 if __name__ == "__main__":

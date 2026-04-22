@@ -35,24 +35,25 @@ async def main() -> int:
 
     await init_db()
     try:
-        upserted = await sync_templates(args.business_id)
-    except Exception as exc:
-        print(f"sync_templates failed: {exc}", file=sys.stderr)
+        try:
+            upserted = await sync_templates(args.business_id)
+        except Exception as exc:
+            print(f"sync_templates failed: {exc}", file=sys.stderr)
+            return 1
+
+        # Summary per status
+        rows = await list_templates(args.business_id)
+        by_status: dict[str, list[str]] = {}
+        for r in rows:
+            by_status.setdefault(r.status, []).append(f"{r.name}/{r.language}")
+
+        print(f"Synced {upserted} template(s) for {args.business_id}:")
+        for status, names in sorted(by_status.items()):
+            print(f"  [{status}] {', '.join(names)}")
+
+        return 0
+    finally:
         await close_db()
-        return 1
-
-    # Summary per status
-    rows = await list_templates(args.business_id)
-    by_status: dict[str, list[str]] = {}
-    for r in rows:
-        by_status.setdefault(r.status, []).append(f"{r.name}/{r.language}")
-
-    print(f"Synced {upserted} template(s) for {args.business_id}:")
-    for status, names in sorted(by_status.items()):
-        print(f"  [{status}] {', '.join(names)}")
-
-    await close_db()
-    return 0
 
 
 if __name__ == "__main__":

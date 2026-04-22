@@ -199,3 +199,116 @@ async def test_send_template_reply_fires_regardless_of_window(mock_channel):
 async def test_send_business_initiated_is_alias_of_send_template_reply():
     # Module-level identity check — same function object, no surprise.
     assert send_business_initiated is send_template_reply
+
+
+# ---------------------------------------------------------------------------
+# touch_inbound monotonicity + future-clamp (P2.7 regression guards)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_touch_inbound_does_not_regress_on_older_at():
+    """A late-arriving webhook with an older `at` must NOT shrink the window.
+
+    Simulates Meta replaying an older webhook after a newer one landed."""
+    now = datetime.now(timezone.utc)
+    newer = now - timedelta(minutes=5)
+    older = now - timedelta(hours=10)
+
+    await touch_inbound(BIZ, CUSTOMER, at=newer)
+    await touch_inbound(BIZ, CUSTOMER, at=older)  # must be no-op
+
+    # Window still open because the newer timestamp wins
+    assert await is_within_24h_window(BIZ, CUSTOMER) is True
+
+
+@pytest.mark.asyncio
+async def test_touch_inbound_clamps_future_timestamp():
+    """A future `at` (clock skew, replay, malicious forged timestamp) must
+    be clamped to now() so it can't stretch the window past policy."""
+    far_future = datetime.now(timezone.utc) + timedelta(hours=48)
+    await touch_inbound(BIZ, CUSTOMER, at=far_future)
+
+    # Read back and assert it's not in the future.
+    from db_models import Customer
+    session_factory = __import__("database").get_session_factory()
+    async with session_factory() as s:
+        from sqlalchemy import select
+        stmt = select(Customer.last_inbound_at).where(
+            Customer.business_id == BIZ, Customer.wa_id == CUSTOMER
+        )
+        stored = (await s.execute(stmt)).scalar_one()
+    if stored.tzinfo is None:
+        stored = stored.replace(tzinfo=timezone.utc)
+    assert stored <= datetime.now(timezone.utc) + timedelta(seconds=1)
+
+
+# ---------------------------------------------------------------------------
+# image_url validation (security L1)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_send_template_reply_rejects_non_http_image_url(mock_channel):
+    await _upsert_from_meta(BIZ, {
+        "id": "t1", "name": "car_promo", "language": "en",
+        "status": "APPROVED", "category": "MARKETING", "components": [],
+    })
+    with pytest.raises(ValueError, match="http"):
+        await send_template_reply(
+            BIZ, CUSTOMER, "car_promo", ["Rahul"],
+            image_url="javascript:alert(1)",
+        )
+    mock_channel.send_template.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_send_template_reply_rejects_image_url_without_host(mock_channel):
+    await _upsert_from_meta(BIZ, {
+        "id": "t1", "name": "car_promo", "language": "en",
+        "status": "APPROVED", "category": "MARKETING", "components": [],
+    })
+    with pytest.raises(ValueError, match="missing host"):
+        await send_template_reply(
+            BIZ, CUSTOMER, "car_promo", ["Rahul"],
+            image_url="https:///no-host",
+        )
+
+
+@pytest.mark.asyncio
+async def test_send_template_reply_allows_valid_https_image_url(mock_channel):
+    await _upsert_from_meta(BIZ, {
+        "id": "t1", "name": "car_promo", "language": "en",
+        "status": "APPROVED", "category": "MARKETING", "components": [],
+    })
+    # Must not raise
+    await send_template_reply(
+        BIZ, CUSTOMER, "car_promo", ["Rahul"],
+        image_url="https://cdn.example.com/car.jpg",
+    )
+    mock_channel.send_template.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# send_reply inside-window ignores fallback_template (caller-confusion hook)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_send_reply_inside_window_ignores_fallback_template(mock_channel):
+    """Inside the window, fallback_template is silently ignored by design.
+
+    Documenting this in a test so the behavior is explicit and future
+    refactors don't accidentally reverse it."""
+    await touch_inbound(BIZ, CUSTOMER)
+    await _upsert_from_meta(BIZ, {
+        "id": "t1", "name": "followup_24h", "language": "en",
+        "status": "APPROVED", "category": "UTILITY", "components": [],
+    })
+
+    result = await send_reply(
+        BIZ, CUSTOMER, "free-form text",
+        fallback_template="followup_24h",
+        fallback_variables=["Ramesh"],
+    )
+
+    assert result == "wamid.text-1"
+    mock_channel.send_text.assert_awaited_once_with(CUSTOMER, "free-form text")
+    mock_channel.send_template.assert_not_awaited()

@@ -48,16 +48,16 @@ class _MockResponse:
     def __init__(self, body: dict, *, status_code: int = 200) -> None:
         self._body = body
         self.status_code = status_code
+        # _raise_if_graph_error reads .content to decide whether to parse
+        # JSON; .text is only used when JSON parsing fails.
+        self.content = b"{}" if body is not None else b""
+        self.text = ""
 
     def json(self) -> dict:
         return self._body
 
-    def raise_for_status(self) -> None:
-        if self.status_code >= 400:
-            import httpx
-            raise httpx.HTTPStatusError(
-                "mock", request=None, response=None  # type: ignore[arg-type]
-            )
+    def raise_for_status(self) -> None:  # pragma: no cover — unused now
+        return None
 
 
 class _MockClient:
@@ -95,8 +95,12 @@ class _MockClient:
     ("REJECTED", "rejected"),
     ("PAUSED", "paused"),
     ("DISABLED", "disabled"),
-    ("PENDING_DELETION", "paused"),
+    # "scheduled for deletion" must not be sendable; maps to DISABLED
+    # so the dispatcher treats it as unavailable (not "Meta may re-enable").
+    ("PENDING_DELETION", "disabled"),
+    ("DELETED", "disabled"),
     ("IN_APPEAL", "pending"),
+    ("LIMIT_EXCEEDED", "paused"),
     ("UNKNOWN_FUTURE_VALUE", "pending"),
     (None, "pending"),
     ("", "pending"),
@@ -213,7 +217,15 @@ async def test_register_template_submits_and_persists(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_register_template_re_register_updates_row(monkeypatch):
+async def test_register_template_local_upsert_on_same_name(monkeypatch):
+    """If the caller (or a future retry loop) invokes register_template
+    twice AND Meta accepts both calls (test-only scenario — real Meta
+    rejects duplicates with 2388023; covered separately in
+    test_register_template_graph_error_raises_structured), the local row
+    should be updated in place rather than a new row inserted.
+
+    This is purely a unit test of the upsert's unique-constraint path.
+    """
     monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "waba-1")
     monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "tok")
     cap = _MockClient(post_body={"id": "meta-v1", "status": "PENDING",
@@ -264,6 +276,76 @@ async def test_sync_templates_single_page(monkeypatch):
     assert n == 2
     rows = await list_templates(BIZ)
     assert {r.name for r in rows} == {"a", "b"}
+
+
+@pytest.mark.asyncio
+async def test_sync_templates_breaks_on_stuck_cursor(monkeypatch):
+    """If Meta ever returns the same cursor twice, break — don't infinite-loop."""
+    monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "waba-1")
+    monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "tok")
+    cap = _MockClient(get_pages=[
+        {"data": [{"id": "t1", "name": "a", "language": "en", "status": "APPROVED",
+                   "category": "UTILITY", "components": []}],
+         "paging": {"cursors": {"after": "stuck"}, "next": "https://.../next"}},
+        {"data": [{"id": "t2", "name": "b", "language": "en", "status": "APPROVED",
+                   "category": "UTILITY", "components": []}],
+         "paging": {"cursors": {"after": "stuck"}, "next": "https://.../next"}},
+        # If the break condition is broken, a 3rd page would be requested
+        # and MockClient.get_pages would run out -> default empty payload.
+    ])
+    with patch("services.templates.httpx.AsyncClient", lambda: cap):
+        n = await sync_templates(BIZ)
+    # First page written fully, second page written, third page refused.
+    assert n == 2
+    # Exactly 2 GETs: first seeds cursor='stuck', second sees no advance.
+    assert len(cap.gets) == 2
+
+
+@pytest.mark.asyncio
+async def test_sync_templates_graph_error_raises_structured(monkeypatch):
+    """Graph errors must surface as GraphAPIError, not a bare HTTPError."""
+    monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "waba-1")
+    monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "tok")
+    from whatsapp import GraphAPIError
+
+    class _ErrClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def get(self, *a, **kw):
+            return _MockResponse(
+                {"error": {"code": 190, "message": "Access token expired"}},
+                status_code=401,
+            )
+
+    with patch("services.templates.httpx.AsyncClient", lambda: _ErrClient()):
+        with pytest.raises(GraphAPIError) as exc_info:
+            await sync_templates(BIZ)
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.code == 190
+
+
+@pytest.mark.asyncio
+async def test_register_template_graph_error_raises_structured(monkeypatch):
+    monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "waba-1")
+    monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "tok")
+    from whatsapp import GraphAPIError
+
+    class _DupClient:
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+        async def post(self, *a, **kw):
+            return _MockResponse(
+                {"error": {"code": 2388023, "message": "Message template already exists"}},
+                status_code=400,
+            )
+
+    with patch("services.templates.httpx.AsyncClient", lambda: _DupClient()):
+        with pytest.raises(GraphAPIError) as exc_info:
+            await register_template(BIZ, "dup", "en", [{"type": "BODY", "text": "x"}])
+    assert exc_info.value.code == 2388023
+    # Row should NOT have been upserted (error happened before local write).
+    rows = await list_templates(BIZ, status="pending")
+    assert not any(r.name == "dup" for r in rows)
 
 
 @pytest.mark.asyncio
