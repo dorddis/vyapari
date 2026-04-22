@@ -23,11 +23,18 @@ async def log_message(
     external_msg_id: str | None = None,
     images: list[str] | None = None,
     meta: dict | None = None,
+    business_id: str | None = None,
 ) -> str:
-    """Persist one message row and return generated DB id."""
+    """Persist one message row and return generated DB id.
+
+    `business_id` is optional for Phase 3.5 back-compat; callers that
+    have a resolved tenant should pass it so the row is tenant-scoped
+    for future audit queries.
+    """
     session_factory = get_session_factory()
     async with session_factory() as session:
         row = MessageLog(
+            business_id=business_id,
             wa_id=wa_id,
             role=role,
             direction=direction,
@@ -59,6 +66,7 @@ async def log_incoming_message(msg: IncomingMessage, channel: str) -> str:
         text=msg.text or "",
         msg_type=msg.msg_type.value,
         external_msg_id=msg.msg_id,
+        business_id=msg.business_id or None,
         meta={
             "sender_name": msg.sender_name or "",
             "button_reply_id": msg.button_reply_id or "",

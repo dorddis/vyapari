@@ -488,11 +488,14 @@ async def add_message(
     images: list[str] | None = None,
     is_escalation: bool = False,
     escalation_reason: str = "",
+    *,
+    business_id: str | None = None,
 ) -> MessageRecord:
     msg_id = str(uuid4())
     async with _session() as s:
         row = M.Message(
             id=msg_id,
+            business_id=business_id,
             conversation_id=conversation_id,
             role=role.value,
             content=content,
@@ -572,7 +575,7 @@ async def get_last_customer_message_time(customer_wa_id: str) -> datetime | None
 # ---------------------------------------------------------------------------
 
 async def create_relay_session(
-    staff_wa_id: str, customer_wa_id: str
+    staff_wa_id: str, customer_wa_id: str, *, business_id: str | None = None,
 ) -> RelaySessionRecord | None:
     async with _get_lock(f"relay_{customer_wa_id}"):
         async with _session() as s:
@@ -608,6 +611,7 @@ async def create_relay_session(
         async with _session() as s:
             row = M.RelaySession(
                 id=str(uuid4()),
+                business_id=business_id,
                 staff_wa_id=staff_wa_id,
                 customer_wa_id=customer_wa_id,
                 conversation_id=conv.id,
@@ -716,12 +720,14 @@ async def is_customer_in_relay(customer_wa_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 async def add_escalation(
-    conversation_id: str, trigger: str, summary: str
+    conversation_id: str, trigger: str, summary: str,
+    *, business_id: str | None = None,
 ) -> EscalationRecord:
     esc_id = str(uuid4())
     async with _session() as s:
         row = M.Escalation(
             id=esc_id,
+            business_id=business_id,
             conversation_id=conversation_id,
             trigger=trigger,
             summary=summary,

@@ -270,6 +270,13 @@ class Message(Base):
     __tablename__ = "messages"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    # Nullable for Phase 3.5 rollout + back-compat with pre-P3.5 rows.
+    # Phase 3.7+ rewrites ALL insert paths to populate + will eventually
+    # flip to NOT NULL after a backfill job.
+    business_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("businesses.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
     conversation_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
     )
@@ -299,6 +306,10 @@ class Escalation(Base):
     __tablename__ = "escalations"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    business_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("businesses.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
     conversation_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
     )
@@ -326,6 +337,10 @@ class RelaySession(Base):
     __tablename__ = "relay_sessions"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    business_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("businesses.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
     staff_wa_id: Mapped[str] = mapped_column(
         String(32), ForeignKey("staff.wa_id", ondelete="CASCADE"), nullable=False
     )
@@ -532,6 +547,10 @@ class MessageLog(Base):
     __tablename__ = "message_logs"
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True, default=_uuid)
+    business_id: Mapped[str | None] = mapped_column(
+        String(64), ForeignKey("businesses.id", ondelete="CASCADE"),
+        nullable=True, index=True,
+    )
     wa_id: Mapped[str] = mapped_column(String(32), index=True)
     role: Mapped[str] = mapped_column(String(24), index=True)
     direction: Mapped[str] = mapped_column(String(16), index=True)
