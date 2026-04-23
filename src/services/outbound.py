@@ -190,9 +190,11 @@ def _validate_image_url(url: str | None) -> None:
 
 # Graph error codes that mean "template is no longer sendable" — invalidate
 # our local APPROVED row so the next dispatcher run doesn't pick it again.
-# 131009: parameter mismatch; 132000-132015 bracket template policy / missing
-# / paused / disabled / rejected / revoked states.
-_TEMPLATE_UNSENDABLE_CODES = {131009, 132000, 132001, 132005, 132007, 132012, 132015}
+# 131009: parameter mismatch. 132000/132001/132005/132012/132015 cover
+# missing / paused / pending / param-mismatch / revoked.
+# NOT included: 132007 (template rate limit) — transient, retry with
+# backoff; flipping to PAUSED would cause downstream ops confusion.
+_TEMPLATE_UNSENDABLE_CODES = {131009, 132000, 132001, 132005, 132012, 132015}
 
 
 async def _mark_template_paused(

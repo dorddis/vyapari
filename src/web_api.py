@@ -39,7 +39,7 @@ _ALLOWED_IMAGE_MIME = {
 _ALLOWED_VOICE_MIME = {
     "audio/ogg", "audio/mpeg", "audio/wav", "audio/x-wav",
     "audio/mp4", "audio/webm", "audio/aac", "audio/m4a",
-    "audio/x-m4a",
+    "audio/x-m4a", "audio/amr",
 }
 
 
