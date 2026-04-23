@@ -58,17 +58,11 @@ class OracleRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
 
 
-class OwnerSendRequest(BaseModel):
-    customer_id: str
-    message: str
-
-
-class OwnerReleaseRequest(BaseModel):
-    customer_id: str
-
-
-class OracleRequest(BaseModel):
-    query: str
+# NOTE: the second, validator-less copies of OwnerSendRequest /
+# OwnerReleaseRequest / OracleRequest that lived here pre-P3.5b
+# shadowed the declarations above, silently dropping min_length /
+# max_length caps. A 10MB POST /owner/send body hit dispatch unbounded.
+# Removed in P3.5b #7; test_owner_send_validator guards the fix.
 
 
 class ResetRequest(BaseModel):
