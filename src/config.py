@@ -28,14 +28,9 @@ OPENAI_TTS_MODEL = os.getenv("OPENAI_TTS_MODEL", "gpt-4o-mini-tts")
 OPENAI_TTS_VOICE = os.getenv("OPENAI_TTS_VOICE", "coral")
 VOICE_REPLY_ENABLED = os.getenv("VOICE_REPLY_ENABLED", "true").lower() == "true"
 
-# If no OpenAI key, fall back to existing Gemini conversation engine
+# Guards optional OpenAI-only features (sentiment in escalation.py).
+# The main agent path requires OpenAI — no flag gates it.
 USE_OPENAI = bool(OPENAI_API_KEY)
-
-# ---------------------------------------------------------------------------
-# Gemini (fallback)
-# ---------------------------------------------------------------------------
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # ---------------------------------------------------------------------------
 # Database
@@ -82,7 +77,6 @@ WHATSAPP_API_URL = (
     f"/{WHATSAPP_PHONE_NUMBER_ID}/messages"
 )
 META_APP_SECRET = os.getenv("META_APP_SECRET", "")
-META_APP_ID = os.getenv("META_APP_ID", "")
 API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "")
 
 # ---------------------------------------------------------------------------
