@@ -16,8 +16,10 @@ The contextvar is task-local — two concurrent asyncio tasks serving
 different tenants never see each other's creds.
 """
 
+import asyncio
 import contextlib
 import logging
+import random
 import re
 from contextvars import ContextVar
 from urllib.parse import urlparse
@@ -145,32 +147,59 @@ class GraphAPIError(Exception):
         self.body = body or {}
 
 
+# Graph statuses worth retrying: 429 (rate limit), 502/503/504 (transient
+# upstream). Client errors 4xx (except 429) are the caller's fault and
+# never succeed on retry.
+_RETRY_STATUSES = {429, 502, 503, 504}
+_MAX_ATTEMPTS = 3
+
+
 async def _post_message(payload: dict, timeout: int = 30) -> dict:
     """POST a pre-built Graph API payload to /messages and return the JSON.
 
-    Shared by every outbound message type (text, media, interactive,
-    template, typing). Raises GraphAPIError on non-2xx OR on any 2xx
-    response that carries an `error` object — previously these failures
-    were silently returned as opaque JSON, so the caller logged a
-    synthetic-id "success" row for a message the customer never saw.
-    """
-    async with httpx.AsyncClient() as client:
-        resp = await client.post(
-            _messages_url(),
-            json=payload,
-            headers={
-                "Authorization": f"Bearer {_access_token()}",
-                "Content-Type": "application/json",
-            },
-            timeout=timeout,
-        )
+    Shared by every outbound message type. Raises GraphAPIError on
+    non-2xx OR on any 2xx response that carries an `error` object.
 
-    # Parse the body defensively — Meta sometimes returns HTML on edge auth
-    # errors. We don't want a JSON-parse crash to mask the real status.
-    try:
-        body = resp.json() if resp.content else {}
-    except Exception:
-        body = {"raw_text": resp.text}
+    Retries on 429/502/503/504 up to 3 attempts with jittered exponential
+    backoff (base 1s, max ~8s between attempts). Other 4xx errors raise
+    immediately — they're caller bugs and retrying wouldn't help.
+    """
+    last_resp: httpx.Response | None = None
+    last_body: dict = {}
+
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                _messages_url(),
+                json=payload,
+                headers={
+                    "Authorization": f"Bearer {_access_token()}",
+                    "Content-Type": "application/json",
+                },
+                timeout=timeout,
+            )
+
+        try:
+            body = resp.json() if resp.content else {}
+        except Exception:
+            body = {"raw_text": resp.text}
+
+        last_resp = resp
+        last_body = body if isinstance(body, dict) else {}
+
+        if resp.status_code in _RETRY_STATUSES and attempt < _MAX_ATTEMPTS:
+            delay = min(2 ** (attempt - 1), 8) + random.random() * 0.5
+            log.warning(
+                "Graph API %s on attempt %d/%d; backing off %.2fs",
+                resp.status_code, attempt, _MAX_ATTEMPTS, delay,
+            )
+            await asyncio.sleep(delay)
+            continue
+
+        break
+
+    resp = last_resp
+    body = last_body
 
     if resp.status_code >= 400:
         err = body.get("error") if isinstance(body, dict) else None
@@ -179,11 +208,9 @@ async def _post_message(payload: dict, timeout: int = 30) -> dict:
             f"Graph API {resp.status_code}: {err or body}",
             status_code=resp.status_code,
             code=code,
-            body=body if isinstance(body, dict) else {},
+            body=body,
         )
 
-    # 2xx with an error object — rare, but e.g. certain template policy
-    # rejections arrive this way. Surface them explicitly.
     if isinstance(body, dict) and "error" in body:
         err = body["error"]
         code = err.get("code") if isinstance(err, dict) else None
