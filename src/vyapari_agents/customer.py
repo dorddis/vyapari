@@ -236,7 +236,9 @@ async def run_customer_agent(
         name=customer.name,
         phone=wa_id,
         lead_status=customer.lead_status.value,
-        interested_cars=customer.interested_cars,
+        # Copy so auto-track mutations below don't also mutate the DB snapshot;
+        # the != comparison at write-time then actually detects changes.
+        interested_cars=list(customer.interested_cars),
         conversation_state=conversation.state.value,
         conversation_id=conversation.id,
         source=customer.source,
@@ -289,7 +291,9 @@ async def run_customer_agent(
     from services.escalation import extract_car_images
     images = extract_car_images(reply, CATALOGUE["cars"])
 
-    # Auto-track interested cars from the conversation
+    # Auto-track interested cars from the conversation. Mutate ctx —
+    # that's the list we persist below; customer.interested_cars is the
+    # read-only DB snapshot used to detect what changed.
     reply_lower = reply.lower()
     msg_lower = message.lower()
     for car in CATALOGUE["cars"]:
@@ -298,8 +302,8 @@ async def run_customer_agent(
         model_lower = car["model"].lower()
         if model_lower in reply_lower or model_lower in msg_lower:
             car_label = f"{car['model']}"
-            if car_label not in customer.interested_cars:
-                customer.interested_cars.append(car_label)
+            if car_label not in ctx.interested_cars:
+                ctx.interested_cars.append(car_label)
 
     # Post-run escalation detection
     is_escalation = False
