@@ -621,6 +621,11 @@ async def download_media(media_id: str) -> tuple[bytes, str]:
     Returns (file_bytes, mime_type).
     Raises httpx.HTTPStatusError on failure.
     """
+    # Meta media ids are numeric. Reject anything else before we
+    # interpolate into a Graph URL — defense-in-depth against path
+    # injection if the webhook parser is ever bypassed.
+    if not re.fullmatch(r"\d+", media_id or ""):
+        raise ValueError(f"Invalid media_id format: {media_id!r}")
     graph_base = f"https://graph.facebook.com/{WHATSAPP_API_VERSION}"
     headers = {"Authorization": f"Bearer {_access_token()}"}
 
