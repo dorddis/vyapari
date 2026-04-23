@@ -308,8 +308,19 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
                     # Resolver found the phone_number_id but the channel
                     # row is stale / orphaned. Fall through to global key.
                     tenant_app_secret = None
-        except Exception:
-            log.exception("Tenant resolution failed; falling back to global secret")
+        except Exception as exc:
+            # Resolver or decrypt raised; tenant_business_id may still be
+            # set from the pnid lookup. We intentionally drop the traceback
+            # (pre-P3.5a used log.exception, which chained full exception
+            # args including any ciphertext fragments the decrypt layer
+            # surfaced). If tenant_business_id is set, the guard at L334
+            # forces 403 — it does NOT fall back to the global secret
+            # despite the old log message claiming so.
+            log.warning(
+                "Tenant resolution failed for pnid=%s: %s",
+                _safe_log_field(phone_number_id),
+                type(exc).__name__,
+            )
 
     # Signature verification fires for any whatsapp-mode deployment, not just
     # when WHATSAPP_ENABLED=true — the two flags used to be independent and
@@ -318,7 +329,31 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     # messages from arbitrary phone numbers.
     verify_signature = config.WHATSAPP_ENABLED or config.CHANNEL_MODE == "whatsapp"
     if verify_signature:
-        effective_secret = tenant_app_secret or config.META_APP_SECRET
+        # P3.5a #5: once `tenant_business_id` resolves, we MUST verify
+        # against THAT tenant's app_secret. The pre-P3.5a `tenant_app_secret
+        # or config.META_APP_SECRET` fallback let a shared-Meta-app ISV
+        # setup silently accept a body signed with the shared secret but
+        # forged to claim a sibling tenant's phone_number_id — the handler
+        # had already set `tenant_business_id` from the pre-verification
+        # pnid peek, so the spoofed message landed in the wrong queue.
+        #
+        # Policy:
+        # - Tenant resolved + secret loaded -> use tenant secret. No fallback.
+        # - Tenant resolved + secret unavailable (decrypt failed, empty) -> 403.
+        # - Tenant NOT resolved (unknown pnid, missing field) -> fall back to
+        #   global META_APP_SECRET. Preserves legacy single-tenant demo.
+        if tenant_business_id is not None:
+            if not tenant_app_secret:
+                log.warning(
+                    "Tenant %s resolved but app_secret unavailable; "
+                    "refusing webhook (no fallback to META_APP_SECRET)",
+                    _safe_log_field(tenant_business_id),
+                )
+                return Response(content="Forbidden", status_code=403)
+            effective_secret = tenant_app_secret
+        else:
+            effective_secret = config.META_APP_SECRET
+
         if not effective_secret:
             log.error(
                 "No signing secret for webhook (phone_number_id=%s, "
@@ -403,19 +438,39 @@ async def _process_and_reply(msg: IncomingMessage):
                 from services.voice import transcribe_voice_note
 
                 if msg.media_id and not msg.media_url:
-                    # WhatsApp: download via Graph API
-                    from whatsapp import download_media
+                    # WhatsApp: download via Graph API. Route through the
+                    # tenant-bound adapter so both Graph hops carry THIS
+                    # tenant's access_token — not the module-level env
+                    # fallback that `whatsapp.download_media` used to pick
+                    # up when called directly (P3.5a #1).
                     log.info(f"Downloading voice note {msg.media_id} for {msg.wa_id}...")
-                    audio_bytes, mime_type = await download_media(msg.media_id)
+                    audio_bytes, mime_type = await channel.download_media(msg.media_id)
                 else:
-                    # media_url already set (e.g. web upload)
+                    # media_url already set (e.g. web-clone upload pointing at
+                    # our own Supabase/local storage, or a pre-signed Meta URL).
+                    # P3.5a #8 follow-up: only attach the Graph bearer token when
+                    # the URL is on Meta's media allow-list AND https — previously
+                    # this branch attached `Bearer {env-token}` to ANY URL, which
+                    # was (a) useless for local web-clone URLs and (b) an env-token
+                    # leak / SSRF surface if media_url ever became user-controllable.
                     import httpx
+                    from urllib.parse import urlparse
+                    from whatsapp import _is_trusted_media_host
                     log.info(f"Downloading voice note from {msg.media_url[:60]}...")
+                    parsed = urlparse(msg.media_url)
+                    attach_bearer = (
+                        parsed.scheme == "https"
+                        and _is_trusted_media_host(msg.media_url)
+                        and bool(config.WHATSAPP_ACCESS_TOKEN)
+                    )
                     async with httpx.AsyncClient() as http:
                         headers = {}
-                        if config.WHATSAPP_ACCESS_TOKEN:
+                        if attach_bearer:
                             headers["Authorization"] = f"Bearer {config.WHATSAPP_ACCESS_TOKEN}"
-                        resp = await http.get(msg.media_url, headers=headers, timeout=30)
+                        resp = await http.get(
+                            msg.media_url, headers=headers, timeout=30,
+                            follow_redirects=False,
+                        )
                         resp.raise_for_status()
                         audio_bytes = resp.content
                         mime_type = resp.headers.get("content-type", "audio/ogg")
@@ -433,12 +488,12 @@ async def _process_and_reply(msg: IncomingMessage):
         # Image / Document: download from WhatsApp, store, set media_url
         if msg.msg_type.value in ("image", "document") and msg.media_id and not msg.media_url:
             try:
-                from whatsapp import download_media
                 from services.image_store import upload_image as store_image
                 from services.image_store import _ext_from_mime
 
+                # Tenant-bound download — see voice-note comment above (P3.5a #1).
                 log.info(f"Downloading media {msg.media_id} for {msg.wa_id}...")
-                file_bytes, mime_type = await download_media(msg.media_id)
+                file_bytes, mime_type = await channel.download_media(msg.media_id)
 
                 if not file_bytes:
                     raise ValueError(f"Downloaded 0 bytes for media {msg.media_id}")

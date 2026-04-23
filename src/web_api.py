@@ -88,18 +88,24 @@ def _require_web_clone() -> WebCloneAdapter:
 def _resolve_business_id(request: Request) -> str:
     """Resolve the tenant for a REST API request.
 
-    Priority (Phase 3.7):
+    Priority:
     1. If `request.state.business_id` was set by `_require_api_auth` from
-       an API key lookup, use that — the key binds to a specific tenant.
-    2. Explicit `X-Business-Id` header (dev / ops override).
+       an API-key lookup OR a legacy-token success, use that — the key
+       (or legacy path) binds to a specific tenant.
+    2. Explicit `X-Business-Id` header — DEV / STAGING ONLY. In production
+       the header is ignored outright. Pre-P3.5a this header was honored
+       unconditionally; a holder of the shared legacy `API_AUTH_TOKEN`
+       (every dev laptop) could add `X-Business-Id: <victim>` and drive
+       the tenant-scoped endpoints against another tenant's data.
     3. Single-tenant bootstrap default (web demo, tests).
     """
     auth_bid = getattr(request.state, "business_id", None)
     if auth_bid:
         return auth_bid
-    header_bid = request.headers.get("X-Business-Id")
-    if header_bid:
-        return header_bid.strip()
+    if config.APP_ENV.lower() != "production":
+        header_bid = request.headers.get("X-Business-Id")
+        if header_bid:
+            return header_bid.strip()
     from services.business_config import default_business_id
     return default_business_id()
 
@@ -142,8 +148,13 @@ async def _require_api_auth(request: Request) -> None:
         request.state.business_id = biz
         return
 
-    # Legacy fallback: shared single-tenant token.
+    # Legacy fallback: shared single-tenant token. Bind to the bootstrap
+    # business explicitly — pre-P3.5a this path returned without setting
+    # request.state.business_id, which let a legacy-token holder spoof
+    # any tenant by adding an X-Business-Id header (review: security #1).
     if config.API_AUTH_TOKEN and hmac.compare_digest(provided, config.API_AUTH_TOKEN):
+        from services.business_config import default_business_id as _default_bid
+        request.state.business_id = _default_bid()
         return
 
     raise HTTPException(status_code=401, detail="Unauthorized")
@@ -225,11 +236,19 @@ async def get_messages(
     request: Request,
     since_id: str | None = None,
 ):
-    """Return persisted message history for a single customer."""
+    """Return persisted message history for a single customer.
+
+    Tenant-scoped (P3.5a #4): the wa_id is resolved within the caller's
+    business only. A valid API key for tenant A looking up tenant B's
+    customer_id receives an empty list, not B's transcripts.
+    """
     await _require_api_auth(request)
     _require_web_clone()
+    business_id = _resolve_business_id(request)
     mode = await state.get_conversation_state(wa_id)
-    messages = await fetch_messages_for_wa_id(wa_id, since_id=since_id)
+    messages = await fetch_messages_for_wa_id(
+        wa_id, since_id=since_id, business_id=business_id,
+    )
     return {
         "customer_id": wa_id,
         "mode": _to_ui_mode(mode),
@@ -268,10 +287,11 @@ async def owner_chat(req: OwnerChatRequest, request: Request):
 
 @router.get("/conversations")
 async def list_conversations(request: Request):
-    """List conversations for the owner panel."""
+    """List conversations for the owner panel (tenant-scoped, P3.5a #4)."""
     await _require_api_auth(request)
     _require_web_clone()
-    conversations = await list_conversations_from_logs()
+    business_id = _resolve_business_id(request)
+    conversations = await list_conversations_from_logs(business_id=business_id)
     for conversation in conversations:
         conv_state = await state.get_conversation_state(conversation["customer_id"])
         conversation["mode"] = _to_ui_mode(conv_state)
@@ -281,14 +301,20 @@ async def list_conversations(request: Request):
 
 @router.get("/conversation/{wa_id}")
 async def get_conversation_detail(wa_id: str, request: Request):
-    """Get a customer's full message history."""
+    """Get a customer's full message history (tenant-scoped, P3.5a #4).
+
+    Returns a 'Customer not found' payload if the wa_id does not exist
+    within the caller's business — avoiding cross-tenant enumeration
+    via the existence of an error message.
+    """
     await _require_api_auth(request)
     _require_web_clone()
+    business_id = _resolve_business_id(request)
     customer = await state.get_customer(wa_id)
-    if not customer:
+    if not customer or customer.business_id != business_id:
         return {"error": "Customer not found", "messages": []}
     mode = await state.get_conversation_state(wa_id)
-    messages = await fetch_messages_for_wa_id(wa_id)
+    messages = await fetch_messages_for_wa_id(wa_id, business_id=business_id)
 
     return {
         "customer_id": wa_id,
@@ -305,9 +331,16 @@ async def get_conversation_detail(wa_id: str, request: Request):
 
 @router.get("/staff")
 async def list_staff(request: Request):
-    """List all staff members."""
+    """List staff for the caller's business (tenant-scoped, P3.5a #4 follow-up).
+
+    Pre-P3.5a this endpoint mirrored the same bug that router's
+    _push_escalation_notification had — an unscoped state.list_staff()
+    returned every tenant's staff to any caller. Reviewers caught this
+    as a sibling leak to the four wa_id endpoints in commit 4.
+    """
     await _require_api_auth(request)
-    staff_list = await state.list_staff()
+    business_id = _resolve_business_id(request)
+    staff_list = await state.list_staff(business_id=business_id)
     return {
         "staff": [
             {
@@ -399,11 +432,23 @@ async def oracle_query(req: OracleRequest, request: Request):
 
 @router.post("/reset")
 async def reset_conversation(req: ResetRequest, request: Request):
-    """Reset a customer's conversation (for demo purposes)."""
+    """Reset a customer's conversation within the caller's business.
+
+    Tenant-scoped (P3.5a #4): a valid API key for tenant A cannot wipe
+    tenant B's messages or customer state. Scoping the message-log
+    delete is the primary defense; the customer-state reset also
+    checks tenant ownership before touching the row.
+    """
     await _require_api_auth(request)
     _require_web_clone()
-    await delete_messages_for_wa_id(req.customer_id)
-    await state.reset_customer_state(req.customer_id)
+    business_id = _resolve_business_id(request)
+    # Scoped delete: rows for req.customer_id owned by OTHER tenants
+    # are left untouched.
+    await delete_messages_for_wa_id(req.customer_id, business_id=business_id)
+    # Only reset the customer row if it actually belongs to this tenant.
+    customer = await state.get_customer(req.customer_id)
+    if customer and customer.business_id == business_id:
+        await state.reset_customer_state(req.customer_id)
     reset_outbox()
     return {"status": "ok", "customer_id": req.customer_id}
 

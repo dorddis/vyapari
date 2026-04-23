@@ -10,12 +10,16 @@ from unittest.mock import patch
 
 import pytest
 import pytest_asyncio
+from cryptography.fernet import Fernet
 from sqlalchemy import delete
 
 import config
+from channels import base as channel_base
 from database import get_session_factory
-from db_models import MessageTemplate
+from db_models import ApiKey, MessageTemplate, WhatsAppChannel
+from services import business_config as bc
 from services import templates as svc
+from services.tenant_onboarding import provision_whatsapp_channel
 from services.templates import (
     _normalize_status,
     _upsert_from_meta,
@@ -30,18 +34,43 @@ BIZ = config.DEFAULT_BUSINESS_ID
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _clean_templates():
-    """Wipe message_templates between tests.
+async def _clean_templates_and_channel(monkeypatch):
+    """Reset template + channel rows and provision a default channel.
 
-    conftest.clean_state resets most state tables but was authored before
-    Phase 2 added message_templates. Scope the cleanup to this module
-    to avoid touching the global fixture.
+    Phase 2 read credentials from config env globals; post-P3.5a they
+    come from `whatsapp_channels` via `load_business_context`. Every
+    test gets a fresh channel with stable creds (waba-1 / tok) so the
+    existing URL + header assertions keep the same shape.
+
+    conftest.clean_state resets most state tables but predates Phase 2's
+    message_templates and Phase 3's whatsapp_channels — scope the cleanup
+    here to avoid mutating the global fixture.
     """
+    monkeypatch.setenv("VYAPARI_ENCRYPTION_KEY", Fernet.generate_key().decode())
     session_factory = get_session_factory()
     async with session_factory() as s:
         await s.execute(delete(MessageTemplate))
+        await s.execute(delete(ApiKey))
+        await s.execute(delete(WhatsAppChannel))
         await s.commit()
+    bc.invalidate_cache()
+    channel_base.reset_channel()
+    await provision_whatsapp_channel(
+        BIZ,
+        phone_number="919100000000",
+        phone_number_id="pnid-default-templates",
+        waba_id="waba-1",
+        access_token="tok",
+        app_secret="sec",
+        webhook_verify_token="",
+        verification_pin="",
+    )
     yield
+    async with session_factory() as s:
+        await s.execute(delete(WhatsAppChannel))
+        await s.commit()
+    bc.invalidate_cache()
+    channel_base.reset_channel()
 
 
 class _MockResponse:
@@ -200,8 +229,6 @@ async def test_list_templates_filters_by_status():
 
 @pytest.mark.asyncio
 async def test_register_template_submits_and_persists(monkeypatch):
-    monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "waba-1")
-    monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "tok")
     cap = _MockClient(post_body={"id": "meta-id-1", "status": "PENDING",
                                  "category": "UTILITY"})
     with patch("services.templates.httpx.AsyncClient", lambda: cap):
@@ -226,8 +253,6 @@ async def test_register_template_local_upsert_on_same_name(monkeypatch):
 
     This is purely a unit test of the upsert's unique-constraint path.
     """
-    monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "waba-1")
-    monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "tok")
     cap = _MockClient(post_body={"id": "meta-v1", "status": "PENDING",
                                  "category": "UTILITY"})
     with patch("services.templates.httpx.AsyncClient", lambda: cap):
@@ -249,9 +274,33 @@ async def test_register_template_local_upsert_on_same_name(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_register_template_raises_when_waba_unset(monkeypatch):
-    monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "")
-    with pytest.raises(RuntimeError, match="WHATSAPP_BUSINESS_ACCOUNT_ID"):
+async def test_register_template_raises_when_channel_missing():
+    """Pre-P3.5a this tested an empty env var. Now the guard is a missing
+    whatsapp_channels row — a business with no provisioned channel cannot
+    hit Meta's template endpoints, and the error shape must be a clear
+    NoActiveChannelError so ops can distinguish it from a Graph outage.
+    """
+    from services.business_config import NoActiveChannelError
+    session_factory = get_session_factory()
+    async with session_factory() as s:
+        await s.execute(delete(WhatsAppChannel))
+        await s.commit()
+    bc.invalidate_cache()
+    with pytest.raises(NoActiveChannelError):
+        await register_template(BIZ, "n", "en", [])
+
+
+@pytest.mark.asyncio
+async def test_register_template_raises_when_waba_id_empty(monkeypatch):
+    """Defensive: a provisioned channel with empty waba_id must surface
+    a RuntimeError rather than building a malformed Graph URL."""
+    from db_models import WhatsAppChannel
+    from sqlalchemy import update
+    async with get_session_factory()() as s:
+        await s.execute(update(WhatsAppChannel).values(waba_id=""))
+        await s.commit()
+    bc.invalidate_cache()
+    with pytest.raises(RuntimeError, match="waba_id is empty"):
         await register_template(BIZ, "n", "en", [])
 
 
@@ -261,8 +310,6 @@ async def test_register_template_raises_when_waba_unset(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sync_templates_single_page(monkeypatch):
-    monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "waba-1")
-    monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "tok")
     cap = _MockClient(get_pages=[
         {"data": [
             {"id": "t1", "name": "a", "language": "en", "status": "APPROVED",
@@ -281,8 +328,6 @@ async def test_sync_templates_single_page(monkeypatch):
 @pytest.mark.asyncio
 async def test_sync_templates_breaks_on_stuck_cursor(monkeypatch):
     """If Meta ever returns the same cursor twice, break — don't infinite-loop."""
-    monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "waba-1")
-    monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "tok")
     cap = _MockClient(get_pages=[
         {"data": [{"id": "t1", "name": "a", "language": "en", "status": "APPROVED",
                    "category": "UTILITY", "components": []}],
@@ -304,8 +349,6 @@ async def test_sync_templates_breaks_on_stuck_cursor(monkeypatch):
 @pytest.mark.asyncio
 async def test_sync_templates_graph_error_raises_structured(monkeypatch):
     """Graph errors must surface as GraphAPIError, not a bare HTTPError."""
-    monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "waba-1")
-    monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "tok")
     from whatsapp import GraphAPIError
 
     class _ErrClient:
@@ -326,8 +369,6 @@ async def test_sync_templates_graph_error_raises_structured(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_register_template_graph_error_raises_structured(monkeypatch):
-    monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "waba-1")
-    monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "tok")
     from whatsapp import GraphAPIError
 
     class _DupClient:
@@ -350,8 +391,6 @@ async def test_register_template_graph_error_raises_structured(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_sync_templates_paginates(monkeypatch):
-    monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "waba-1")
-    monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "tok")
     cap = _MockClient(get_pages=[
         {"data": [{"id": "t1", "name": "a", "language": "en", "status": "APPROVED",
                    "category": "UTILITY", "components": []}],

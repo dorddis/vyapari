@@ -36,6 +36,7 @@ import config
 from database import get_session_factory
 from db_models import MessageTemplate
 from models.enums import MessageTemplateStatus
+from services.business_config import BusinessContext, load_business_context
 from whatsapp import GraphAPIError
 
 log = logging.getLogger("vyapari.services.templates")
@@ -50,19 +51,32 @@ def _templates_endpoint(waba_id: str) -> str:
     return f"https://graph.facebook.com/{config.WHATSAPP_API_VERSION}/{waba_id}/message_templates"
 
 
-def _resolve_waba_id(business_id: str) -> str:
-    """Return the WABA id to use for Graph API calls.
+async def _load_graph_ctx(business_id: str) -> BusinessContext:
+    """Resolve the tenant's WABA id + access_token for Graph calls.
 
-    Phase 2: single-tenant, reads from config.WHATSAPP_BUSINESS_ACCOUNT_ID.
-    Phase 3 will look it up in whatsapp_channels by business_id.
+    Pre-P3.5a this module read `config.WHATSAPP_BUSINESS_ACCOUNT_ID` and
+    `config.WHATSAPP_ACCESS_TOKEN` unconditionally — every tenant's
+    register/sync hit the env WABA with the env token, silently cross-
+    writing Meta state. Now each call threads business_id through to
+    `whatsapp_channels` so Graph hops carry THAT tenant's creds.
+
+    Raises `NoActiveChannelError` / `BusinessNotFoundError` on the usual
+    paths (channel row not yet provisioned, business_id unknown). A
+    provisioned channel with an empty waba_id surfaces the same
+    RuntimeError Phase 2 used to raise — keeps the failure shape for ops.
     """
-    waba_id = config.WHATSAPP_BUSINESS_ACCOUNT_ID
-    if not waba_id:
+    ctx = await load_business_context(business_id)
+    if not ctx.waba_id:
         raise RuntimeError(
-            "WHATSAPP_BUSINESS_ACCOUNT_ID is not configured. Set it in "
-            "your .env or pass an explicit waba_id when multi-tenant."
+            f"whatsapp_channels.waba_id is empty for business {business_id!r}; "
+            "cannot call Meta template endpoints."
         )
-    return waba_id
+    if not ctx.access_token:
+        raise RuntimeError(
+            f"whatsapp_channels.access_token is empty for business "
+            f"{business_id!r}; re-provision the channel."
+        )
+    return ctx
 
 
 # ---------------------------------------------------------------------------
@@ -150,7 +164,7 @@ async def register_template(
     Raises httpx.HTTPError on non-2xx Meta responses (bad access token,
     malformed components, rate limit). The caller should log + surface.
     """
-    waba_id = _resolve_waba_id(business_id)
+    ctx = await _load_graph_ctx(business_id)
     payload = {
         "name": name,
         "category": category.upper(),
@@ -158,13 +172,13 @@ async def register_template(
         "components": components,
     }
     headers = {
-        "Authorization": f"Bearer {config.WHATSAPP_ACCESS_TOKEN}",
+        "Authorization": f"Bearer {ctx.access_token}",
         "Content-Type": "application/json",
     }
 
     async with httpx.AsyncClient() as client:
         resp = await client.post(
-            _templates_endpoint(waba_id),
+            _templates_endpoint(ctx.waba_id),
             json=payload,
             headers=headers,
             timeout=30,
@@ -221,8 +235,8 @@ async def sync_templates(business_id: str) -> int:
     Raises httpx.HTTPError on Meta failure. Local DB writes are best-effort
     per-row; one bad row does not abort the whole sync.
     """
-    waba_id = _resolve_waba_id(business_id)
-    headers = {"Authorization": f"Bearer {config.WHATSAPP_ACCESS_TOKEN}"}
+    ctx = await _load_graph_ctx(business_id)
+    headers = {"Authorization": f"Bearer {ctx.access_token}"}
 
     upserted = 0
     cursor: str | None = None
@@ -232,7 +246,7 @@ async def sync_templates(business_id: str) -> int:
             if cursor:
                 params["after"] = cursor
             resp = await client.get(
-                _templates_endpoint(waba_id),
+                _templates_endpoint(ctx.waba_id),
                 params=params,
                 headers=headers,
                 timeout=30,

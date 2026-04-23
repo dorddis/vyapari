@@ -10,6 +10,7 @@ from models import IncomingMessage, MessageType
 from services.message_log import log_message
 from whatsapp import (
     GraphAPIError,
+    download_media as legacy_download_media,
     mark_read as legacy_mark_read,
     send_audio as legacy_send_audio,
     send_contacts as legacy_send_contacts,
@@ -376,6 +377,18 @@ class WhatsAppAdapter(ChannelAdapter):
     async def mark_read(self, msg_id: str) -> None:
         with self._tenant_ctx():
             await legacy_mark_read(msg_id)
+
+    async def download_media(self, media_id: str) -> tuple[bytes, str]:
+        """Fetch inbound media bytes from the Graph API under tenant creds.
+
+        Override of the base ChannelAdapter method. Wraps the module-level
+        helper in `_tenant_ctx()` so the Bearer token attached to both
+        Graph hops (metadata lookup + signed-URL fetch) is the one bound
+        to this adapter — not the module-level env fallback that Phase 3
+        left exposed on `whatsapp._access_token`.
+        """
+        with self._tenant_ctx():
+            return await legacy_download_media(media_id)
 
     def extract_status_updates(self, payload: dict) -> list[dict]:
         """Parse the `statuses[]` array Meta delivers for outbound messages.
