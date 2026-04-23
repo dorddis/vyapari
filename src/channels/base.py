@@ -128,6 +128,21 @@ class ChannelAdapter(ABC):
         """
         ...
 
+    async def download_media(self, media_id: str) -> tuple[bytes, str]:
+        """Download inbound media by provider-side id. Returns (bytes, mime).
+
+        Channels that upload via a public URL (web_clone) keep `media_url`
+        populated directly and never hit this path. WhatsApp overrides to
+        call the Graph API with tenant-scoped credentials via `_tenant_ctx`.
+
+        Default raises NotImplementedError so a mis-wired caller gets a
+        loud failure rather than the old footgun of silently falling back
+        to module-level env credentials.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement download_media"
+        )
+
     def extract_status_updates(self, payload: dict) -> list[dict]:
         """Parse outbound-message delivery status events from a webhook payload.
 

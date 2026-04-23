@@ -403,10 +403,13 @@ async def _process_and_reply(msg: IncomingMessage):
                 from services.voice import transcribe_voice_note
 
                 if msg.media_id and not msg.media_url:
-                    # WhatsApp: download via Graph API
-                    from whatsapp import download_media
+                    # WhatsApp: download via Graph API. Route through the
+                    # tenant-bound adapter so both Graph hops carry THIS
+                    # tenant's access_token — not the module-level env
+                    # fallback that `whatsapp.download_media` used to pick
+                    # up when called directly (P3.5a #1).
                     log.info(f"Downloading voice note {msg.media_id} for {msg.wa_id}...")
-                    audio_bytes, mime_type = await download_media(msg.media_id)
+                    audio_bytes, mime_type = await channel.download_media(msg.media_id)
                 else:
                     # media_url already set (e.g. web upload)
                     import httpx
@@ -433,12 +436,12 @@ async def _process_and_reply(msg: IncomingMessage):
         # Image / Document: download from WhatsApp, store, set media_url
         if msg.msg_type.value in ("image", "document") and msg.media_id and not msg.media_url:
             try:
-                from whatsapp import download_media
                 from services.image_store import upload_image as store_image
                 from services.image_store import _ext_from_mime
 
+                # Tenant-bound download — see voice-note comment above (P3.5a #1).
                 log.info(f"Downloading media {msg.media_id} for {msg.wa_id}...")
-                file_bytes, mime_type = await download_media(msg.media_id)
+                file_bytes, mime_type = await channel.download_media(msg.media_id)
 
                 if not file_bytes:
                     raise ValueError(f"Downloaded 0 bytes for media {msg.media_id}")
