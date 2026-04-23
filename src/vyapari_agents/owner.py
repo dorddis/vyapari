@@ -210,20 +210,6 @@ async def assign_lead(customer_identifier: str, staff_identifier: str) -> str:
 
 
 @function_tool
-async def broadcast_message(message_text: str, filter_status: str = "all") -> str:
-    """Send a message to multiple customers."""
-    from vyapari_agents.tools.communication import tool_broadcast_message
-    return await tool_broadcast_message(message_text, filter_status)
-
-
-@function_tool
-async def batch_followup(date: str = "yesterday", status_filter: str = "warm,hot") -> str:
-    """Generate and send personalized follow-ups for leads from a date."""
-    from vyapari_agents.tools.leads import tool_batch_followup
-    return await tool_batch_followup(date, status_filter)
-
-
-@function_tool
 async def parse_inventory_image(image_url: str) -> str:
     """Parse a car inventory image or PDF. Extracts car data and adds to catalogue.
     Use when the owner sends a photo, PDF, or screenshot of their stock list."""
@@ -265,7 +251,6 @@ owner_agent = Agent[StaffContext](
         get_active_leads, get_lead_details, get_stats, assign_lead,
         open_session, get_customer_number,
         add_staff, remove_staff, list_staff,
-        broadcast_message, batch_followup,
         parse_inventory_image, parse_token_proof,
     ],
     model=config.OPENAI_MAIN_MODEL,
