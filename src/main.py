@@ -45,15 +45,21 @@ async def relay_expiry_loop():
     while True:
         try:
             expired = await state.check_expired_relay_sessions()
-            for session in expired:
+        except Exception as e:
+            log.error(f"Relay expiry check error: {e}")
+            expired = []
+
+        # Per-session try/except: one tenant's bad creds (or 5xx) must
+        # not abort the whole sweep. check_expired_relay_sessions has
+        # already committed status=expired for every row, so a failed
+        # notification would silently drop a user-facing message if we
+        # let the exception escape.
+        for session in expired:
+            try:
                 customer = await state.get_customer(session.customer_wa_id)
                 name = customer.name if customer else "Customer"
                 log.info(f"Relay session expired: {name} ({session.customer_wa_id})")
 
-                # Tenant-bound adapter: the expiry notification MUST come
-                # from the tenant that owns this session, not from the env
-                # fallback. Sessions predating Phase 3.5 have no business_id
-                # and fall back to the unbound adapter.
                 channel = await get_tenant_channel(session.business_id or "")
                 await channel.send_text(
                     session.staff_wa_id,
@@ -63,8 +69,11 @@ async def relay_expiry_loop():
                     session.customer_wa_id,
                     "Thanks for your patience! I'm here if you need anything else.",
                 )
-        except Exception as e:
-            log.error(f"Relay expiry check error: {e}")
+            except Exception as exc:
+                log.warning(
+                    "Relay expiry notification failed for business=%s conv=%s: %s",
+                    session.business_id, session.conversation_id, exc,
+                )
         await asyncio.sleep(60)
 
 
@@ -528,9 +537,48 @@ async def _process_and_reply(msg: IncomingMessage):
 # ---------------------------------------------------------------------------
 
 @app.get("/health")
-async def health():
+@app.get("/health/live")
+async def health_live():
+    """Liveness: process is up. No external checks — k8s uses this to
+    decide whether to restart the container."""
     return {
-        "status": "healthy",
+        "status": "alive",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness: process can actually serve traffic. Checks DB + secrets
+    engine. k8s uses this to decide whether to route traffic here."""
+    problems: list[str] = []
+
+    try:
+        from database import get_session_factory
+        from sqlalchemy import text
+        session_factory = get_session_factory()
+        async with session_factory() as session:
+            await asyncio.wait_for(
+                session.execute(text("SELECT 1")), timeout=1.0,
+            )
+    except Exception as exc:
+        problems.append(f"db: {type(exc).__name__}")
+
+    try:
+        from services.secrets import primary_key_is_configured
+        if not primary_key_is_configured():
+            problems.append("secrets: VYAPARI_ENCRYPTION_KEY unset")
+    except Exception as exc:
+        problems.append(f"secrets: {type(exc).__name__}")
+
+    if problems:
+        return Response(
+            content=f"Not ready: {'; '.join(problems)}",
+            status_code=503,
+            media_type="text/plain",
+        )
+    return {
+        "status": "ready",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
