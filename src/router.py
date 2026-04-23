@@ -341,16 +341,16 @@ async def dispatch(msg: IncomingMessage) -> str | None:
         await state.get_or_create_conversation(
             msg.wa_id, business_id=msg.business_id or None,
         )
-        # Opens / extends the 24-hour customer-service window. Must run
-        # BEFORE the agent dispatch below — even a crashing agent must not
-        # lose the window signal, since the window ultimately belongs to
-        # Meta's billing, not our own logic.
-        if msg.business_id:
-            try:
-                from services.outbound import touch_inbound
-                await touch_inbound(msg.business_id, msg.wa_id)
-            except Exception:
-                log.warning("touch_inbound failed for %s", msg.wa_id, exc_info=True)
+        # Stamp the 24h window. Fall back to the bootstrap tenant for
+        # legacy single-tenant paths so the window is always recorded.
+        try:
+            from services.outbound import touch_inbound
+            from services.business_config import default_business_id
+            await touch_inbound(
+                msg.business_id or default_business_id(), msg.wa_id,
+            )
+        except Exception:
+            log.warning("touch_inbound failed for %s", msg.wa_id, exc_info=True)
     log.info(
         f"Routed {msg.wa_id} -> {decision.action.value} "
         f"(role={decision.role}, state={decision.conversation_state})"
