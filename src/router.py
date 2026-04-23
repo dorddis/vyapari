@@ -176,14 +176,18 @@ async def _push_escalation_notification(
     """Send escalation notification to the assigned staff or owner."""
     from channels.base import get_tenant_channel
 
-    # Find who to notify: assigned staff, or owner
+    # Find who to notify: assigned staff, or owner.
+    # Staff lookup MUST be tenant-scoped — the unscoped list_staff() call
+    # pre-P3.5a picked "the first owner we see" globally, paging tenant
+    # A's owner for tenant B's escalation (#3).
     conv = await state.get_conversation(customer_wa_id)
     notify_wa_id = None
     if conv and conv.assigned_to:
         notify_wa_id = conv.assigned_to
     else:
-        # Notify the owner
-        staff_list = await state.list_staff()
+        staff_list = await state.list_staff(
+            business_id=business_id or None,
+        )
         for s in staff_list:
             if s.role.value == "owner":
                 notify_wa_id = s.wa_id

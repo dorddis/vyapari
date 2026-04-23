@@ -415,11 +415,21 @@ async def update_staff(wa_id: str, **fields) -> StaffRecord | None:
         return _staff_to_record(row)
 
 
-async def list_staff() -> list[StaffRecord]:
+async def list_staff(
+    *, business_id: str | None = None,
+) -> list[StaffRecord]:
+    """Return non-removed staff, optionally scoped to one business.
+
+    `business_id=None` keeps pre-P3.5a behavior for callers that predate
+    multi-tenancy (web_api panel, some agent tools). New code paths —
+    notably `_push_escalation_notification` — MUST pass business_id so
+    tenant B's escalation does not page tenant A's owner.
+    """
     async with _session() as s:
-        result = await s.execute(
-            select(M.Staff).where(M.Staff.status != "removed")
-        )
+        stmt = select(M.Staff).where(M.Staff.status != "removed")
+        if business_id is not None:
+            stmt = stmt.where(M.Staff.business_id == business_id)
+        result = await s.execute(stmt)
         return [_staff_to_record(r) for r in result.scalars().all()]
 
 
