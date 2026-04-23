@@ -135,15 +135,7 @@ async def route_message(msg: IncomingMessage) -> RoutingDecision:
 # ---------------------------------------------------------------------------
 
 async def handle_customer_agent(msg: IncomingMessage, conv_state: ConversationState) -> str:
-    """Run Customer Agent via OpenAI Agents SDK (Gemini fallback if no key)."""
-    if not config.USE_OPENAI:
-        try:
-            from conversation import get_reply
-            return get_reply(customer_id=msg.wa_id, message=msg.text or "")
-        except Exception as e:
-            log.error(f"Gemini fallback error: {e}")
-            return "Sorry, I'm having trouble right now. Please try again!"
-
+    """Run Customer Agent via OpenAI Agents SDK."""
     from vyapari_agents.customer import run_customer_agent
     response = await run_customer_agent(
         msg.wa_id,
@@ -210,7 +202,7 @@ async def _push_escalation_notification(
 
 
 async def handle_owner_agent(msg: IncomingMessage, staff_name: str | None) -> str:
-    """Run Owner Agent via OpenAI Agents SDK (Gemini fallback if no key)."""
+    """Run Owner Agent via OpenAI Agents SDK."""
     from services.owner_setup import (
         handle_owner_setup_message,
         should_handle_owner_setup,
@@ -218,15 +210,6 @@ async def handle_owner_agent(msg: IncomingMessage, staff_name: str | None) -> st
 
     if await should_handle_owner_setup(msg.wa_id, msg.text or ""):
         return await handle_owner_setup_message(msg.wa_id, msg.text or "")
-
-    if not config.USE_OPENAI:
-        try:
-            from owner_agent import owner_query
-            result = owner_query(msg.text or "")
-            return result.get("text", "")
-        except Exception as e:
-            log.error(f"Gemini owner fallback error: {e}")
-            return "Sorry, something went wrong."
 
     from vyapari_agents.owner import run_owner_agent
     return await run_owner_agent(
@@ -239,9 +222,6 @@ async def handle_owner_agent(msg: IncomingMessage, staff_name: str | None) -> st
 
 async def handle_sdr_agent(msg: IncomingMessage, staff_name: str | None) -> str:
     """Run SDR Agent (same as owner but with limited tools)."""
-    if not config.USE_OPENAI:
-        return "SDR agent requires OpenAI. Set OPENAI_API_KEY in .env."
-
     from vyapari_agents.owner import run_owner_agent
     return await run_owner_agent(
         msg.wa_id,
