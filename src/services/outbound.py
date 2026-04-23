@@ -49,8 +49,10 @@ from sqlalchemy import select
 
 from channels.base import get_tenant_channel
 from database import get_session_factory
-from db_models import Customer
+from db_models import Customer, MessageTemplate
+from models.enums import MessageTemplateStatus
 from services.templates import get_approved_template
+from whatsapp import GraphAPIError
 
 log = logging.getLogger("vyapari.services.outbound")
 
@@ -186,6 +188,31 @@ def _validate_image_url(url: str | None) -> None:
         raise ValueError(f"image_url missing host: {url!r}")
 
 
+# Graph error codes that mean "template is no longer sendable" — invalidate
+# our local APPROVED row so the next dispatcher run doesn't pick it again.
+# 131009: parameter mismatch; 132000-132015 bracket template policy / missing
+# / paused / disabled / rejected / revoked states.
+_TEMPLATE_UNSENDABLE_CODES = {131009, 132000, 132001, 132005, 132007, 132012, 132015}
+
+
+async def _mark_template_paused(
+    business_id: str, name: str, language: str,
+) -> None:
+    """Flip the local row to PAUSED so the pre-send check refuses it next."""
+    session_factory = get_session_factory()
+    async with session_factory() as session:
+        stmt = select(MessageTemplate).where(
+            MessageTemplate.business_id == business_id,
+            MessageTemplate.name == name,
+            MessageTemplate.language == language,
+        )
+        row = (await session.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return
+        row.status = MessageTemplateStatus.PAUSED.value
+        await session.commit()
+
+
 async def send_template_reply(
     business_id: str,
     customer_wa_id: str,
@@ -195,15 +222,12 @@ async def send_template_reply(
     language: str = "en",
     image_url: str | None = None,
 ) -> str:
-    """Send an approved template. Always valid — templates reset the window.
+    """Send an approved template. Templates reset the 24h window.
 
     Raises TemplateNotApprovedError if the template isn't APPROVED in our
-    catalog. Admins must call services.templates.register_template first
-    and wait for Meta to approve before calling this.
-
-    Returns the outbound message id from the channel adapter. Failures
-    from the channel adapter's Graph call go through the adapter's own
-    failed-id handling (P1.8).
+    catalog, OR if Meta rejects the send with a template-policy error
+    (in which case the local row is flipped to PAUSED so subsequent
+    sends don't re-try the same stale state).
     """
     _validate_image_url(image_url)
 
@@ -211,16 +235,27 @@ async def send_template_reply(
     if tmpl is None:
         raise TemplateNotApprovedError(business_id, template_name, language)
 
-    # Tenant-bound adapter (P3.11): outbound uses THIS business's access
-    # token, not the deployment-wide env default.
     channel = await get_tenant_channel(business_id)
-    return await channel.send_template(
-        to=customer_wa_id,
-        template_name=template_name,
-        language=language,
-        params=variables,
-        image_url=image_url,
-    )
+    try:
+        return await channel.send_template(
+            to=customer_wa_id,
+            template_name=template_name,
+            language=language,
+            params=variables,
+            image_url=image_url,
+        )
+    except GraphAPIError as exc:
+        if exc.code in _TEMPLATE_UNSENDABLE_CODES:
+            log.warning(
+                "Template %s/%s for %s rejected by Meta (code=%s); "
+                "flipping local row to PAUSED",
+                template_name, language, business_id, exc.code,
+            )
+            await _mark_template_paused(business_id, template_name, language)
+            raise TemplateNotApprovedError(
+                business_id, template_name, language,
+            ) from exc
+        raise
 
 
 # Semantic alias — "business-initiated" is the Meta term for any outbound
