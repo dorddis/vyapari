@@ -154,13 +154,16 @@ async def tool_assign_lead(customer_identifier: str, staff_identifier: str) -> s
     if not staff:
         return json.dumps({"success": False, "data": None, "message": f"Staff '{staff_identifier}' not found."})
 
-    # Persist assignment to the DB; the pre-fix code mutated a Pydantic
-    # projection and threw it away.
+    # Create a conversation if the customer hasn't messaged yet so the
+    # owner can pre-assign; otherwise the tool dead-ends with no recovery.
+    await state.get_or_create_conversation(
+        customer.wa_id, business_id=customer.business_id or None,
+    )
     ok = await state.assign_conversation(customer.wa_id, staff.wa_id)
     if not ok:
         return json.dumps({
             "success": False, "data": None,
-            "message": f"No conversation for {customer.name}.",
+            "message": f"Could not assign {customer.name}.",
         })
 
     return json.dumps({

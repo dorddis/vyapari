@@ -315,9 +315,11 @@ async def run_customer_agent(
         await state.set_conversation_state(wa_id, ConversationState.ESCALATED, reason)
         is_escalation = True
         escalation_reason = reason
+        # Use ctx — customer.interested_cars is the pre-turn DB snapshot
+        # and won't include cars mentioned this turn.
         escalation_summary = (
             f"Customer: {customer.name}\n"
-            f"Car interest: {', '.join(customer.interested_cars) or 'browsing'}\n"
+            f"Car interest: {', '.join(ctx.interested_cars) or 'browsing'}\n"
             f"Trigger: {reason}\n"
             f"Last message: {message[:100]}"
         )

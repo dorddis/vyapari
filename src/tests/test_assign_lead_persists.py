@@ -34,20 +34,26 @@ async def test_assign_lead_persists_to_conversation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_assign_lead_fails_cleanly_without_conversation() -> None:
-    """Missing conversation -> tool returns success=False with a message."""
+async def test_assign_lead_autocreates_conversation_for_pre_assignment() -> None:
+    """Owner pre-assigns a customer before they've messaged — tool creates
+    the conversation row so the assignment sticks, rather than dead-ending."""
     owner = "919000000102"
+    customer_wa = "919000000202"
     await state.add_staff(
         wa_id=owner, name="Alice",
         role=StaffRole.OWNER, status=StaffStatus.ACTIVE,
     )
-    # Customer exists but no conversation row yet.
-    await state.get_or_create_customer("919000000202", name="Mohan")
+    await state.get_or_create_customer(customer_wa, name="Mohan")
+    # No conversation row yet.
+    assert await state.get_conversation(customer_wa) is None
 
-    raw = await tool_assign_lead("919000000202", owner)
+    raw = await tool_assign_lead(customer_wa, owner)
     result = json.loads(raw)
-    assert result["success"] is False
-    assert "No conversation" in result["message"]
+    assert result["success"] is True, result
+
+    conv = await state.get_conversation(customer_wa)
+    assert conv is not None
+    assert conv.assigned_to == owner
 
 
 @pytest.mark.asyncio
