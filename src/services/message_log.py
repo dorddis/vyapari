@@ -123,8 +123,20 @@ async def fetch_messages_for_wa_id(
     *,
     since_id: str | None = None,
     limit: int = 500,
+    business_id: str | None = None,
 ) -> list[dict]:
-    """Fetch timeline messages for one wa_id, formatted for web UI."""
+    """Fetch timeline messages for one wa_id, formatted for web UI.
+
+    `business_id` scopes the query when provided — required for
+    multi-tenant callers so a valid API key for tenant A can't read
+    tenant B's transcripts (P3.5a #4). `None` preserves pre-P3.5a
+    unscoped behavior for legacy single-tenant demo callers; all new
+    callers must pass it.
+
+    The anchor lookup (`since_id` -> created_at) also respects the
+    filter — a since_id rowid on tenant B is invisible to tenant A's
+    pagination.
+    """
     session_factory = get_session_factory()
     async with session_factory() as session:
         anchor_created_at = None
@@ -135,13 +147,19 @@ async def fetch_messages_for_wa_id(
                     MessageLog.id == since_id,
                     MessageLog.wa_id == wa_id,
                 )
-                .limit(1)
             )
+            if business_id is not None:
+                anchor_stmt = anchor_stmt.where(
+                    MessageLog.business_id == business_id
+                )
+            anchor_stmt = anchor_stmt.limit(1)
             anchor_created_at = (await session.execute(anchor_stmt)).scalar_one_or_none()
             if anchor_created_at is None:
                 return []
 
         stmt = select(MessageLog).where(MessageLog.wa_id == wa_id)
+        if business_id is not None:
+            stmt = stmt.where(MessageLog.business_id == business_id)
         if anchor_created_at is not None:
             stmt = stmt.where(MessageLog.created_at > anchor_created_at)
         stmt = stmt.order_by(MessageLog.created_at.asc()).limit(limit)
@@ -164,8 +182,16 @@ async def fetch_messages_for_wa_id(
     return messages
 
 
-async def list_conversations_from_logs(limit: int = 200) -> list[dict]:
-    """Build owner-panel conversation summaries from message logs."""
+async def list_conversations_from_logs(
+    limit: int = 200,
+    *,
+    business_id: str | None = None,
+) -> list[dict]:
+    """Build owner-panel conversation summaries from message logs.
+
+    `business_id` scopes the query when provided — owner panels for
+    tenant B must not see tenant A's conversations (P3.5a #4).
+    """
     session_factory = get_session_factory()
     async with session_factory() as session:
         stmt = (
@@ -173,6 +199,8 @@ async def list_conversations_from_logs(limit: int = 200) -> list[dict]:
             .order_by(MessageLog.created_at.desc())
             .limit(max(limit * 20, 500))
         )
+        if business_id is not None:
+            stmt = stmt.where(MessageLog.business_id == business_id)
         rows = (await session.execute(stmt)).scalars().all()
 
     by_wa_id: "OrderedDict[str, MessageLog]" = OrderedDict()
@@ -200,12 +228,23 @@ async def list_conversations_from_logs(limit: int = 200) -> list[dict]:
     return conversations
 
 
-async def delete_messages_for_wa_id(wa_id: str) -> int:
-    """Delete all logged messages for one customer and return deleted row count."""
+async def delete_messages_for_wa_id(
+    wa_id: str,
+    *,
+    business_id: str | None = None,
+) -> int:
+    """Delete all logged messages for one customer; return deleted row count.
+
+    `business_id` scopes the delete when provided — pre-P3.5a a valid
+    API key for tenant A could POST /api/reset with a customer_id from
+    tenant B and wipe B's transcripts (P3.5a #4). `None` preserves the
+    legacy unscoped behavior for single-tenant demos only.
+    """
     session_factory = get_session_factory()
     async with session_factory() as session:
-        result = await session.execute(
-            delete(MessageLog).where(MessageLog.wa_id == wa_id)
-        )
+        stmt = delete(MessageLog).where(MessageLog.wa_id == wa_id)
+        if business_id is not None:
+            stmt = stmt.where(MessageLog.business_id == business_id)
+        result = await session.execute(stmt)
         await session.commit()
         return int(result.rowcount or 0)

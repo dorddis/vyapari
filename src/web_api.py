@@ -225,11 +225,19 @@ async def get_messages(
     request: Request,
     since_id: str | None = None,
 ):
-    """Return persisted message history for a single customer."""
+    """Return persisted message history for a single customer.
+
+    Tenant-scoped (P3.5a #4): the wa_id is resolved within the caller's
+    business only. A valid API key for tenant A looking up tenant B's
+    customer_id receives an empty list, not B's transcripts.
+    """
     await _require_api_auth(request)
     _require_web_clone()
+    business_id = _resolve_business_id(request)
     mode = await state.get_conversation_state(wa_id)
-    messages = await fetch_messages_for_wa_id(wa_id, since_id=since_id)
+    messages = await fetch_messages_for_wa_id(
+        wa_id, since_id=since_id, business_id=business_id,
+    )
     return {
         "customer_id": wa_id,
         "mode": _to_ui_mode(mode),
@@ -268,10 +276,11 @@ async def owner_chat(req: OwnerChatRequest, request: Request):
 
 @router.get("/conversations")
 async def list_conversations(request: Request):
-    """List conversations for the owner panel."""
+    """List conversations for the owner panel (tenant-scoped, P3.5a #4)."""
     await _require_api_auth(request)
     _require_web_clone()
-    conversations = await list_conversations_from_logs()
+    business_id = _resolve_business_id(request)
+    conversations = await list_conversations_from_logs(business_id=business_id)
     for conversation in conversations:
         conv_state = await state.get_conversation_state(conversation["customer_id"])
         conversation["mode"] = _to_ui_mode(conv_state)
@@ -281,14 +290,20 @@ async def list_conversations(request: Request):
 
 @router.get("/conversation/{wa_id}")
 async def get_conversation_detail(wa_id: str, request: Request):
-    """Get a customer's full message history."""
+    """Get a customer's full message history (tenant-scoped, P3.5a #4).
+
+    Returns a 'Customer not found' payload if the wa_id does not exist
+    within the caller's business — avoiding cross-tenant enumeration
+    via the existence of an error message.
+    """
     await _require_api_auth(request)
     _require_web_clone()
+    business_id = _resolve_business_id(request)
     customer = await state.get_customer(wa_id)
-    if not customer:
+    if not customer or customer.business_id != business_id:
         return {"error": "Customer not found", "messages": []}
     mode = await state.get_conversation_state(wa_id)
-    messages = await fetch_messages_for_wa_id(wa_id)
+    messages = await fetch_messages_for_wa_id(wa_id, business_id=business_id)
 
     return {
         "customer_id": wa_id,
@@ -399,11 +414,23 @@ async def oracle_query(req: OracleRequest, request: Request):
 
 @router.post("/reset")
 async def reset_conversation(req: ResetRequest, request: Request):
-    """Reset a customer's conversation (for demo purposes)."""
+    """Reset a customer's conversation within the caller's business.
+
+    Tenant-scoped (P3.5a #4): a valid API key for tenant A cannot wipe
+    tenant B's messages or customer state. Scoping the message-log
+    delete is the primary defense; the customer-state reset also
+    checks tenant ownership before touching the row.
+    """
     await _require_api_auth(request)
     _require_web_clone()
-    await delete_messages_for_wa_id(req.customer_id)
-    await state.reset_customer_state(req.customer_id)
+    business_id = _resolve_business_id(request)
+    # Scoped delete: rows for req.customer_id owned by OTHER tenants
+    # are left untouched.
+    await delete_messages_for_wa_id(req.customer_id, business_id=business_id)
+    # Only reset the customer row if it actually belongs to this tenant.
+    customer = await state.get_customer(req.customer_id)
+    if customer and customer.business_id == business_id:
+        await state.reset_customer_state(req.customer_id)
     reset_outbox()
     return {"status": "ok", "customer_id": req.customer_id}
 

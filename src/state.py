@@ -157,6 +157,7 @@ def _customer_to_record(row: M.Customer) -> CustomerRecord:
         created_at=row.first_seen,
         last_message_at=row.last_active,
         interested_cars=row.interested_cars or [],
+        business_id=row.business_id,
     )
 
 
