@@ -154,10 +154,17 @@ async def tool_assign_lead(customer_identifier: str, staff_identifier: str) -> s
     if not staff:
         return json.dumps({"success": False, "data": None, "message": f"Staff '{staff_identifier}' not found."})
 
-    # Assign
-    conv = await state.get_conversation(customer.wa_id)
-    if conv:
-        conv.assigned_to = staff.wa_id
+    # Create a conversation if the customer hasn't messaged yet so the
+    # owner can pre-assign; otherwise the tool dead-ends with no recovery.
+    await state.get_or_create_conversation(
+        customer.wa_id, business_id=customer.business_id or None,
+    )
+    ok = await state.assign_conversation(customer.wa_id, staff.wa_id)
+    if not ok:
+        return json.dumps({
+            "success": False, "data": None,
+            "message": f"Could not assign {customer.name}.",
+        })
 
     return json.dumps({
         "success": True,
@@ -170,42 +177,8 @@ async def tool_batch_followup(
     date: str = "yesterday",
     status_filter: str = "warm,hot",
 ) -> str:
-    """Generate and send personalized follow-ups for leads.
-
-    Loads each customer's conversation history, generates a personalized
-    follow-up, and sends it. Uses template if outside 24hr window.
-
-    For now: returns what WOULD be sent. Actual LLM generation + sending
-    will be wired when the agents are running.
-    """
-    statuses = [LeadStatus(s.strip().lower()) for s in status_filter.split(",") if s.strip().lower() in [e.value for e in LeadStatus]]
-    if not statuses:
-        statuses = [LeadStatus.WARM, LeadStatus.HOT]
-
-    customers = await state.list_customers(status_filter=statuses, limit=50)
-
-    followups = []
-    for c in customers:
-        conv = await state.get_conversation(c.wa_id)
-        msgs = await state.get_messages(conv.id) if conv else []
-        last_customer_msg = ""
-        for msg in reversed(msgs):
-            if msg.role == MessageRole.CUSTOMER:
-                last_customer_msg = msg.content[:80]
-                break
-
-        followups.append({
-            "name": c.name,
-            "wa_id": c.wa_id,
-            "status": c.lead_status.value,
-            "interested_cars": c.interested_cars,
-            "last_message": last_customer_msg,
-            # TODO: generate personalized message via LLM (asyncio.gather)
-            "suggested_followup": f"Hi {c.name}, still thinking about the {c.interested_cars[0] if c.interested_cars else 'car'}?",
-        })
-
-    return json.dumps({
-        "success": True,
-        "data": followups,
-        "message": f"{len(followups)} follow-ups ready to send.",
-    })
+    """Not implemented — was returning synthetic success without sending."""
+    raise NotImplementedError(
+        "batch_followup needs per-customer personalization + outbound dispatch; "
+        "deferred to Phase 6 scheduler work"
+    )

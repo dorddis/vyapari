@@ -94,19 +94,13 @@ def _new_msg_id(prefix: str) -> str:
 
 
 async def _require_api_auth(request: Request) -> None:
-    """Authenticate a REST request.
-
-    Tries (in order):
-    1. Per-business API key (X-API-Key or Bearer token) against the
-       `api_keys` table. Success sets `request.state.business_id`.
-    2. Legacy shared `config.API_AUTH_TOKEN` — single-tenant demo path.
-       No business_id is bound; _resolve_business_id falls back to the
-       bootstrap default.
-
-    Auth is skipped entirely when neither enforcement path is enabled
-    (APP_ENV != production AND API_AUTH_TOKEN unset).
-    """
-    requires_auth = config.APP_ENV.lower() == "production" or bool(config.API_AUTH_TOKEN)
+    """Authenticate a REST request via per-business API key or legacy token."""
+    # Only `development` bypasses auth. Staging + production always require
+    # a key; a legacy shared token also counts.
+    requires_auth = (
+        config.APP_ENV.lower() != "development"
+        or bool(config.API_AUTH_TOKEN)
+    )
     if not requires_auth:
         return
 

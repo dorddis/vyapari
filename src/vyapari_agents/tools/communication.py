@@ -47,29 +47,8 @@ async def tool_request_callback(customer_wa_id: str, phone_number: str) -> str:
 
 
 async def tool_broadcast_message(message_text: str, filter_status: str = "all") -> str:
-    """Send a message to multiple customers.
-
-    For now, returns the list of who would receive it.
-    Actual sending happens through the channel adapter.
-    """
-    from models import LeadStatus
-
-    status_filter = None
-    if filter_status != "all":
-        mapping = {
-            "hot": [LeadStatus.HOT],
-            "warm": [LeadStatus.WARM, LeadStatus.HOT],
-            "recent": [LeadStatus.NEW, LeadStatus.WARM, LeadStatus.HOT],
-        }
-        status_filter = mapping.get(filter_status)
-
-    customers = await state.list_customers(status_filter=status_filter)
-
-    # TODO: actually send via channel adapter (with 24hr window template fallback)
-    recipients = [{"name": c.name, "wa_id": c.wa_id, "status": c.lead_status.value} for c in customers]
-
-    return json.dumps({
-        "success": True,
-        "data": {"recipients": recipients, "message": message_text},
-        "message": f"Broadcast queued for {len(recipients)} customer{'s' if len(recipients) != 1 else ''}.",
-    })
+    """Not implemented — was returning synthetic success without sending."""
+    raise NotImplementedError(
+        "broadcast_message needs per-recipient 24h-window + template fallback; "
+        "deferred to Phase 6 scheduler work"
+    )

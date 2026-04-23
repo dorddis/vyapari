@@ -51,7 +51,7 @@ DATABASE_MAX_OVERFLOW = int(os.getenv("DATABASE_MAX_OVERFLOW", "10"))
 _sqlite_path = BASE_DIR / "vyapari.db"
 _LOCAL_DB_URL = f"sqlite+aiosqlite:///{_sqlite_path}"
 
-if os.getenv("APP_ENV", "development") == "development":
+if os.getenv("APP_ENV", "development").lower() == "development":
     DATABASE_URL = _LOCAL_DB_URL
 elif not DATABASE_URL and SUPABASE_DB_URL:
     DATABASE_URL = SUPABASE_DB_URL.replace(
