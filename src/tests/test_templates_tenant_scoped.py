@@ -1,17 +1,4 @@
-"""Multi-tenant template catalog isolation (P3.5a #2).
-
-Pre-P3.5a `services/templates.py` had a tenant-agnostic `_resolve_waba_id`
-that returned `config.WHATSAPP_BUSINESS_ACCOUNT_ID` regardless of
-business_id, and every Graph call hardcoded `Bearer {config.WHATSAPP_ACCESS_TOKEN}`.
-A tenant's `register_template` / `sync_templates` silently hit the env
-WABA with the env token — the onboarding success message literally
-instructed operators to run scripts that cross-wrote Meta state.
-
-These tests guard the fix by asserting that:
-  - register_template(bid=A) posts to A's waba_id using A's access_token
-  - sync_templates(bid=B) gets from B's waba_id using B's access_token
-  - The env fallback never appears in any Graph call
-"""
+"""Multi-tenant template catalog isolation."""
 
 from __future__ import annotations
 
@@ -37,13 +24,7 @@ class _MockResponse:
 
 
 class _CapturingClient:
-    """httpx.AsyncClient stand-in that records URL + Authorization on every call.
-
-    `register_template` fires one POST; `sync_templates` fires one or
-    more GETs until pagination exhausts. The captor answers every call
-    with a stable stub so the service-layer logic proceeds past the
-    Graph hop and into the DB upsert.
-    """
+    """httpx.AsyncClient stand-in that records URL + Authorization per call."""
 
     def __init__(self, *, post_body: dict | None = None,
                  get_body: dict | None = None) -> None:
@@ -79,8 +60,7 @@ class _CapturingClient:
 
 @pytest_asyncio.fixture
 async def two_tenants(monkeypatch):
-    """Seed two businesses each with a WhatsApp channel carrying
-    distinct (waba_id, access_token)."""
+    """Seed two businesses with distinct (waba_id, access_token)."""
     monkeypatch.setenv("VYAPARI_ENCRYPTION_KEY", Fernet.generate_key().decode())
 
     import config
@@ -129,13 +109,8 @@ async def two_tenants(monkeypatch):
 async def test_register_template_uses_tenant_waba_and_token(
     two_tenants, monkeypatch,
 ) -> None:
-    """register_template(A) posts to /waba-alpha/... with TOKEN_ALPHA.
-    register_template(B) posts to /waba-beta/... with TOKEN_BETA.
-    Neither call carries the env default access_token.
-    """
+    """register_template(A) posts to A's waba with A's token; same for B."""
     import config
-    # Make the env obviously different from either tenant — a fallback
-    # would leak this value into `auth` below.
     monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "ENV_TOKEN_MUST_NOT_LEAK")
     monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "ENV_WABA_MUST_NOT_LEAK")
 
@@ -174,9 +149,7 @@ async def test_register_template_uses_tenant_waba_and_token(
 async def test_sync_templates_uses_tenant_waba_and_token(
     two_tenants, monkeypatch,
 ) -> None:
-    """sync_templates(A) GETs /waba-alpha/... with TOKEN_ALPHA;
-    sync_templates(B) GETs /waba-beta/... with TOKEN_BETA.
-    """
+    """sync_templates(A) GETs A's waba with A's token; same for B."""
     import config
     monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "ENV_TOKEN_MUST_NOT_LEAK")
     monkeypatch.setattr(config, "WHATSAPP_BUSINESS_ACCOUNT_ID", "ENV_WABA_MUST_NOT_LEAK")
@@ -201,7 +174,6 @@ async def test_sync_templates_uses_tenant_waba_and_token(
 
     assert n_a == 1
     assert n_b == 1
-    # Exactly one GET per sync — empty paging terminates the loop.
     assert len(cap_a.calls) == 1 and cap_a.calls[0]["method"] == "GET"
     assert len(cap_b.calls) == 1 and cap_b.calls[0]["method"] == "GET"
     assert "/waba-alpha/message_templates" in cap_a.calls[0]["url"]

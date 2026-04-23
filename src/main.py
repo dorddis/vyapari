@@ -281,11 +281,6 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     """
     raw_body = await request.body()
 
-    # Tenant resolution: if the payload carries a phone_number_id we serve,
-    # look up the per-tenant app_secret from whatsapp_channels and verify
-    # the signature against THAT. Falls back to the global META_APP_SECRET
-    # for the single-tenant demo deployments that haven't created a
-    # whatsapp_channels row yet (Phase 0-2 compatibility).
     phone_number_id = _extract_phone_number_id(raw_body)
     tenant_app_secret: str | None = None
     tenant_business_id: str | None = None
@@ -305,48 +300,23 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
                     ctx = await load_business_context(tenant_business_id)
                     tenant_app_secret = ctx.app_secret
                 except (NoActiveChannelError, BusinessNotFoundError):
-                    # Resolver found the phone_number_id but the channel
-                    # row is stale / orphaned. Fall through to global key.
                     tenant_app_secret = None
         except Exception as exc:
-            # Resolver or decrypt raised; tenant_business_id may still be
-            # set from the pnid lookup. We intentionally drop the traceback
-            # (pre-P3.5a used log.exception, which chained full exception
-            # args including any ciphertext fragments the decrypt layer
-            # surfaced). If tenant_business_id is set, the guard at L334
-            # forces 403 — it does NOT fall back to the global secret
-            # despite the old log message claiming so.
+            # Drop traceback: decrypt errors may chain ciphertext fragments.
             log.warning(
                 "Tenant resolution failed for pnid=%s: %s",
                 _safe_log_field(phone_number_id),
                 type(exc).__name__,
             )
 
-    # Signature verification fires for any whatsapp-mode deployment, not just
-    # when WHATSAPP_ENABLED=true — the two flags used to be independent and
-    # a reviewer flagged that CHANNEL_MODE=whatsapp + WHATSAPP_ENABLED=false
-    # silently skipped signature checks, letting the internet spoof inbound
-    # messages from arbitrary phone numbers.
     verify_signature = config.WHATSAPP_ENABLED or config.CHANNEL_MODE == "whatsapp"
     if verify_signature:
-        # P3.5a #5: once `tenant_business_id` resolves, we MUST verify
-        # against THAT tenant's app_secret. The pre-P3.5a `tenant_app_secret
-        # or config.META_APP_SECRET` fallback let a shared-Meta-app ISV
-        # setup silently accept a body signed with the shared secret but
-        # forged to claim a sibling tenant's phone_number_id — the handler
-        # had already set `tenant_business_id` from the pre-verification
-        # pnid peek, so the spoofed message landed in the wrong queue.
-        #
-        # Policy:
-        # - Tenant resolved + secret loaded -> use tenant secret. No fallback.
-        # - Tenant resolved + secret unavailable (decrypt failed, empty) -> 403.
-        # - Tenant NOT resolved (unknown pnid, missing field) -> fall back to
-        #   global META_APP_SECRET. Preserves legacy single-tenant demo.
+        # Resolved tenant requires ITS app_secret — no fallback (shared-app spoof guard).
+        # Unknown pnid falls back to META_APP_SECRET for legacy single-tenant demo.
         if tenant_business_id is not None:
             if not tenant_app_secret:
                 log.warning(
-                    "Tenant %s resolved but app_secret unavailable; "
-                    "refusing webhook (no fallback to META_APP_SECRET)",
+                    "Tenant %s resolved but app_secret unavailable; rejecting",
                     _safe_log_field(tenant_business_id),
                 )
                 return Response(content="Forbidden", status_code=403)
@@ -424,9 +394,6 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
 async def _process_and_reply(msg: IncomingMessage):
     """Process a message through the router and send the reply."""
     try:
-        # Per-tenant adapter (P3.11): whatsapp mode resolves msg.business_id
-        # to a bound WhatsAppAdapter carrying THAT tenant's access_token +
-        # phone_number_id. web_clone mode ignores business_id (single-tenant).
         from channels.base import get_tenant_channel
         channel = await get_tenant_channel(msg.business_id or "")
         await channel.send_typing(msg.wa_id, msg.msg_id)
@@ -438,25 +405,14 @@ async def _process_and_reply(msg: IncomingMessage):
                 from services.voice import transcribe_voice_note
 
                 if msg.media_id and not msg.media_url:
-                    # WhatsApp: download via Graph API. Route through the
-                    # tenant-bound adapter so both Graph hops carry THIS
-                    # tenant's access_token — not the module-level env
-                    # fallback that `whatsapp.download_media` used to pick
-                    # up when called directly (P3.5a #1).
                     log.info(f"Downloading voice note {msg.media_id} for {msg.wa_id}...")
                     audio_bytes, mime_type = await channel.download_media(msg.media_id)
                 else:
-                    # media_url already set (e.g. web-clone upload pointing at
-                    # our own Supabase/local storage, or a pre-signed Meta URL).
-                    # P3.5a #8 follow-up: only attach the Graph bearer token when
-                    # the URL is on Meta's media allow-list AND https — previously
-                    # this branch attached `Bearer {env-token}` to ANY URL, which
-                    # was (a) useless for local web-clone URLs and (b) an env-token
-                    # leak / SSRF surface if media_url ever became user-controllable.
                     import httpx
                     from urllib.parse import urlparse
                     from whatsapp import _is_trusted_media_host
                     log.info(f"Downloading voice note from {msg.media_url[:60]}...")
+                    # Only attach the Graph bearer to trusted Meta hosts on https.
                     parsed = urlparse(msg.media_url)
                     attach_bearer = (
                         parsed.scheme == "https"
@@ -491,7 +447,6 @@ async def _process_and_reply(msg: IncomingMessage):
                 from services.image_store import upload_image as store_image
                 from services.image_store import _ext_from_mime
 
-                # Tenant-bound download — see voice-note comment above (P3.5a #1).
                 log.info(f"Downloading media {msg.media_id} for {msg.wa_id}...")
                 file_bytes, mime_type = await channel.download_media(msg.media_id)
 

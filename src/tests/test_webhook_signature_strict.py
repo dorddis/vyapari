@@ -1,18 +1,4 @@
-"""Webhook signature strictness — no fallback when tenant resolved (P3.5a #5).
-
-Pre-P3.5a main.py:handle_webhook used
-`effective_secret = tenant_app_secret or config.META_APP_SECRET`.
-Under a shared-Meta-app ISV setup (common when multiple tenants sign
-up under one Meta app), META_APP_SECRET is shared, so a signature
-valid for tenant A would also validate a body forged to claim tenant B.
-The handler had already resolved `tenant_business_id` from the
-pre-verification pnid peek — the spoofed message landed in B's queue.
-
-These tests guard the fix:
-  - Tenant resolved + secret loaded   -> only tenant's secret accepts.
-  - Tenant resolved + secret broken   -> 403 (no fallback).
-  - Tenant NOT resolved (unknown pnid) -> global fallback preserved.
-"""
+"""Webhook signature strictness — no fallback when tenant resolved."""
 
 from __future__ import annotations
 
@@ -127,9 +113,7 @@ def _build_payload(pni: str) -> bytes:
 async def test_resolved_tenant_rejects_global_secret_signature(
     whatsapp_app, tenant_a_channel,
 ) -> None:
-    """Signing a pni-strict-a payload with the GLOBAL secret (the pre-
-    P3.5a fallback) must now 403. Under the old code this was 200 —
-    the exact spoofing vector."""
+    """Resolved-tenant webhook signed with the global secret -> 403."""
     body = _build_payload("pni-strict-a")
     transport = httpx.ASGITransport(app=whatsapp_app.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as http:
@@ -147,7 +131,7 @@ async def test_resolved_tenant_rejects_global_secret_signature(
 async def test_resolved_tenant_accepts_tenant_secret_signature(
     whatsapp_app, tenant_a_channel,
 ) -> None:
-    """Sanity — with the correct tenant secret, the webhook still 200s."""
+    """Correct tenant secret still yields 200."""
     body = _build_payload("pni-strict-a")
     transport = httpx.ASGITransport(app=whatsapp_app.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as http:
@@ -165,12 +149,7 @@ async def test_resolved_tenant_accepts_tenant_secret_signature(
 async def test_tenant_with_unloadable_secret_returns_403(
     whatsapp_app, tenant_a_channel, monkeypatch,
 ) -> None:
-    """If the channel row exists but decrypt fails (bad ciphertext,
-    rotated key), the handler must 403 — NOT fall back to the global
-    secret. The attack scenario is: legitimate tenant's provider_config
-    gets corrupted, attacker signs with META_APP_SECRET (shared ISV
-    app), gets accepted as that tenant."""
-    # Corrupt the provider_config so decrypt_secrets raises.
+    """Decrypt failure on a resolved tenant -> 403 (no global fallback)."""
     import config
     from database import get_session_factory
     from db_models import WhatsAppChannel
@@ -188,7 +167,6 @@ async def test_tenant_with_unloadable_secret_returns_403(
     body = _build_payload("pni-strict-a")
     transport = httpx.ASGITransport(app=whatsapp_app.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as http:
-        # Global secret must NOT be accepted even though decrypt failed.
         resp = await http.post(
             "/webhook", content=body,
             headers={
@@ -201,11 +179,7 @@ async def test_tenant_with_unloadable_secret_returns_403(
 
 @pytest_asyncio.fixture
 async def tenant_a_channel_with_empty_secret():
-    """Seed a tenant channel whose app_secret is explicitly an empty
-    string (not a decrypt failure). Regression for gap review P1 #3 —
-    the `if not tenant_app_secret:` guard at main.py:335 also fires on
-    "" but the branch had zero dedicated coverage.
-    """
+    """Seed a tenant channel whose app_secret is an empty string."""
     import config
     from database import get_session_factory
     from db_models import ApiKey, WhatsAppChannel
@@ -223,7 +197,7 @@ async def tenant_a_channel_with_empty_secret():
             waba_id="waba-a",
             provider_config=encrypt_secrets({
                 "access_token": "a-token",
-                "app_secret": "",  # <-- empty, NOT missing
+                "app_secret": "",
                 "webhook_verify_token": "",
                 "verification_pin": "",
             }),
@@ -243,12 +217,7 @@ async def tenant_a_channel_with_empty_secret():
 async def test_resolved_tenant_with_empty_app_secret_returns_403(
     whatsapp_app, tenant_a_channel_with_empty_secret,
 ) -> None:
-    """ctx loads successfully but app_secret is the empty string. The
-    handler must 403 — not fall through to the global secret. This
-    guards against a regression where `if not tenant_app_secret:` at
-    main.py:335 gets flipped to `if tenant_app_secret is None:`
-    (which would treat "" as valid and silently accept the global).
-    """
+    """Empty string app_secret -> 403 (guards `not x` vs `is None` regression)."""
     body = _build_payload("pni-empty-secret")
     transport = httpx.ASGITransport(app=whatsapp_app.app)
     async with httpx.AsyncClient(transport=transport, base_url="http://t") as http:
@@ -264,11 +233,7 @@ async def test_resolved_tenant_with_empty_app_secret_returns_403(
 
 @pytest.mark.asyncio
 async def test_unknown_pnid_falls_back_to_global(whatsapp_app) -> None:
-    """Legacy single-tenant preservation: if the pnid has no channel row
-    at all, the global META_APP_SECRET still verifies. This path stays
-    supported for demo deployments that haven't onboarded any tenant
-    into whatsapp_channels yet."""
-    # Ensure nothing resolves
+    """Unknown pnid -> global META_APP_SECRET fallback (legacy single-tenant)."""
     from database import get_session_factory
     from db_models import WhatsAppChannel
     from services import business_config as bc

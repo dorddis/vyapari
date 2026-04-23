@@ -52,29 +52,15 @@ def _templates_endpoint(waba_id: str) -> str:
 
 
 async def _load_graph_ctx(business_id: str) -> BusinessContext:
-    """Resolve the tenant's WABA id + access_token for Graph calls.
-
-    Pre-P3.5a this module read `config.WHATSAPP_BUSINESS_ACCOUNT_ID` and
-    `config.WHATSAPP_ACCESS_TOKEN` unconditionally — every tenant's
-    register/sync hit the env WABA with the env token, silently cross-
-    writing Meta state. Now each call threads business_id through to
-    `whatsapp_channels` so Graph hops carry THAT tenant's creds.
-
-    Raises `NoActiveChannelError` / `BusinessNotFoundError` on the usual
-    paths (channel row not yet provisioned, business_id unknown). A
-    provisioned channel with an empty waba_id surfaces the same
-    RuntimeError Phase 2 used to raise — keeps the failure shape for ops.
-    """
+    """Resolve the tenant's WABA id + access_token for Graph calls."""
     ctx = await load_business_context(business_id)
     if not ctx.waba_id:
         raise RuntimeError(
-            f"whatsapp_channels.waba_id is empty for business {business_id!r}; "
-            "cannot call Meta template endpoints."
+            f"whatsapp_channels.waba_id is empty for business {business_id!r}"
         )
     if not ctx.access_token:
         raise RuntimeError(
-            f"whatsapp_channels.access_token is empty for business "
-            f"{business_id!r}; re-provision the channel."
+            f"whatsapp_channels.access_token is empty for business {business_id!r}"
         )
     return ctx
 

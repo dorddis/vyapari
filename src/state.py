@@ -419,13 +419,7 @@ async def update_staff(wa_id: str, **fields) -> StaffRecord | None:
 async def list_staff(
     *, business_id: str | None = None,
 ) -> list[StaffRecord]:
-    """Return non-removed staff, optionally scoped to one business.
-
-    `business_id=None` keeps pre-P3.5a behavior for callers that predate
-    multi-tenancy (web_api panel, some agent tools). New code paths —
-    notably `_push_escalation_notification` — MUST pass business_id so
-    tenant B's escalation does not page tenant A's owner.
-    """
+    """Return non-removed staff, optionally scoped to one business."""
     async with _session() as s:
         stmt = select(M.Staff).where(M.Staff.status != "removed")
         if business_id is not None:

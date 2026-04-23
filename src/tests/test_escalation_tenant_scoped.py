@@ -1,14 +1,4 @@
-"""Multi-tenant escalation notification isolation (P3.5a #3).
-
-Pre-P3.5a `router._push_escalation_notification` called
-`state.list_staff()` with no tenant filter and picked the first
-`role == "owner"` it found. With two tenants seeded in any order,
-tenant B's escalation would page tenant A's owner whenever A's row
-sorted first — pure SQLAlchemy ordering, not business logic.
-
-These tests guard the fix: the notify lookup respects `business_id`
-and customers on tenant B can only page tenant B's owner.
-"""
+"""Multi-tenant escalation notification isolation."""
 
 from __future__ import annotations
 
@@ -25,12 +15,7 @@ from models import StaffRole, StaffStatus
 
 @pytest_asyncio.fixture
 async def two_tenants_with_owners():
-    """Seed two businesses and one owner per tenant.
-
-    Uses the bare state.add_staff + Business upsert path (no Fernet,
-    no channel provisioning) — tests here only exercise the staff-list
-    lookup, not any Graph call. Keeps the fixture fast.
-    """
+    """Seed two businesses and one owner per tenant."""
     import config
     from database import get_session_factory
     from db_models import Business, Staff, WhatsAppChannel
@@ -41,8 +26,6 @@ async def two_tenants_with_owners():
     owner_b = "919220000020"
 
     async with get_session_factory()() as s:
-        # Clean any stale rows from prior tests. Staff has a CASCADE FK
-        # to businesses so deleting the business cascades.
         await s.execute(delete(WhatsAppChannel))
         await s.execute(delete(Staff).where(Staff.wa_id.in_([owner_a, owner_b])))
         await s.execute(delete(Business).where(Business.id.in_([a_id, b_id])))
@@ -90,11 +73,7 @@ async def test_list_staff_scoped_to_business(two_tenants_with_owners) -> None:
 
 @pytest.mark.asyncio
 async def test_list_staff_unscoped_is_global(two_tenants_with_owners) -> None:
-    """Back-compat: omitting business_id returns every non-removed row.
-
-    The escalation fix is to pass business_id explicitly — not to change
-    the default. Legacy callers (admin panel list_staff) stay unchanged.
-    """
+    """Back-compat: omitting business_id returns every non-removed row."""
     t = two_tenants_with_owners
     all_staff = await state.list_staff()
     wa_ids = {s.wa_id for s in all_staff}
@@ -102,21 +81,11 @@ async def test_list_staff_unscoped_is_global(two_tenants_with_owners) -> None:
     assert t["owner_b"] in wa_ids
 
 
-# ---------------------------------------------------------------------------
-# _push_escalation_notification tenant scoping
-# ---------------------------------------------------------------------------
-
 @pytest.mark.asyncio
 async def test_escalation_pages_only_same_tenant_owner(
     two_tenants_with_owners, monkeypatch,
 ) -> None:
-    """An escalation stamped business_id=B pages B's owner, never A's.
-
-    Pre-P3.5a: `list_staff()` with no filter returned both owners,
-    `for s in staff_list: if s.role=='owner': break` picked whichever
-    sorted first. This test would have been flaky under that code —
-    it's deterministic under the fix.
-    """
+    """An escalation stamped business_id=B pages B's owner, never A's."""
     from router import _push_escalation_notification
 
     t = two_tenants_with_owners
@@ -154,13 +123,10 @@ async def test_escalation_pages_only_same_tenant_owner(
 async def test_escalation_with_no_staff_logs_and_skips(
     two_tenants_with_owners, monkeypatch, caplog,
 ) -> None:
-    """If the tenant has no owner (misconfigured onboarding), the
-    function logs a warning and sends nothing — doesn't fall through
-    to another tenant's owner."""
+    """No owner on this tenant -> no notification (no cross-tenant fallthrough)."""
     from router import _push_escalation_notification
 
     t = two_tenants_with_owners
-    # Remove the only owner on tenant-a so it has nobody to notify.
     async with __import__("database").get_session_factory()() as s:
         from sqlalchemy import delete as _delete
         from db_models import Staff
@@ -192,12 +158,7 @@ async def test_escalation_with_no_staff_logs_and_skips(
 async def test_escalation_refuses_to_send_without_business_id(
     two_tenants_with_owners, monkeypatch,
 ) -> None:
-    """Calling _push_escalation_notification with an empty business_id
-    must skip silently rather than fall through to the unscoped
-    list_staff() path. Regression for logic review P2 #3 — pre-review
-    the function had `business_id: str = ""` as a default and was a
-    latent foot-gun for any future caller that forgot the kwarg.
-    """
+    """Empty business_id -> skip; no fall-through to unscoped list_staff."""
     from router import _push_escalation_notification
 
     sent: list[tuple[str, str]] = []
@@ -217,7 +178,4 @@ async def test_escalation_refuses_to_send_without_business_id(
     await _push_escalation_notification(
         "919000000001", response, business_id="",
     )
-    assert sent == [], (
-        "Empty business_id must skip — not re-expose the unscoped "
-        "list_staff() pre-P3.5a behavior"
-    )
+    assert sent == []

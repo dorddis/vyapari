@@ -58,13 +58,6 @@ class OracleRequest(BaseModel):
     query: str = Field(min_length=1, max_length=2000)
 
 
-# NOTE: the second, validator-less copies of OwnerSendRequest /
-# OwnerReleaseRequest / OracleRequest that lived here pre-P3.5b
-# shadowed the declarations above, silently dropping min_length /
-# max_length caps. A 10MB POST /owner/send body hit dispatch unbounded.
-# Removed in P3.5b #7; test_owner_send_validator guards the fix.
-
-
 class ResetRequest(BaseModel):
     customer_id: str = Field(min_length=1, max_length=32)
 
@@ -82,16 +75,8 @@ def _require_web_clone() -> WebCloneAdapter:
 def _resolve_business_id(request: Request) -> str:
     """Resolve the tenant for a REST API request.
 
-    Priority:
-    1. If `request.state.business_id` was set by `_require_api_auth` from
-       an API-key lookup OR a legacy-token success, use that — the key
-       (or legacy path) binds to a specific tenant.
-    2. Explicit `X-Business-Id` header — DEV / STAGING ONLY. In production
-       the header is ignored outright. Pre-P3.5a this header was honored
-       unconditionally; a holder of the shared legacy `API_AUTH_TOKEN`
-       (every dev laptop) could add `X-Business-Id: <victim>` and drive
-       the tenant-scoped endpoints against another tenant's data.
-    3. Single-tenant bootstrap default (web demo, tests).
+    Order: auth-bound business_id, then X-Business-Id header (dev/staging
+    only), then single-tenant default.
     """
     auth_bid = getattr(request.state, "business_id", None)
     if auth_bid:
@@ -142,10 +127,8 @@ async def _require_api_auth(request: Request) -> None:
         request.state.business_id = biz
         return
 
-    # Legacy fallback: shared single-tenant token. Bind to the bootstrap
-    # business explicitly — pre-P3.5a this path returned without setting
-    # request.state.business_id, which let a legacy-token holder spoof
-    # any tenant by adding an X-Business-Id header (review: security #1).
+    # Legacy shared token binds to the bootstrap business so an
+    # X-Business-Id header can't retarget another tenant.
     if config.API_AUTH_TOKEN and hmac.compare_digest(provided, config.API_AUTH_TOKEN):
         from services.business_config import default_business_id as _default_bid
         request.state.business_id = _default_bid()
@@ -230,12 +213,7 @@ async def get_messages(
     request: Request,
     since_id: str | None = None,
 ):
-    """Return persisted message history for a single customer.
-
-    Tenant-scoped (P3.5a #4): the wa_id is resolved within the caller's
-    business only. A valid API key for tenant A looking up tenant B's
-    customer_id receives an empty list, not B's transcripts.
-    """
+    """Return persisted message history for a customer in the caller's business."""
     await _require_api_auth(request)
     _require_web_clone()
     business_id = _resolve_business_id(request)
@@ -281,7 +259,7 @@ async def owner_chat(req: OwnerChatRequest, request: Request):
 
 @router.get("/conversations")
 async def list_conversations(request: Request):
-    """List conversations for the owner panel (tenant-scoped, P3.5a #4)."""
+    """List conversations for the owner panel."""
     await _require_api_auth(request)
     _require_web_clone()
     business_id = _resolve_business_id(request)
@@ -295,12 +273,7 @@ async def list_conversations(request: Request):
 
 @router.get("/conversation/{wa_id}")
 async def get_conversation_detail(wa_id: str, request: Request):
-    """Get a customer's full message history (tenant-scoped, P3.5a #4).
-
-    Returns a 'Customer not found' payload if the wa_id does not exist
-    within the caller's business — avoiding cross-tenant enumeration
-    via the existence of an error message.
-    """
+    """Get a customer's full message history, or 'not found' if out of scope."""
     await _require_api_auth(request)
     _require_web_clone()
     business_id = _resolve_business_id(request)
@@ -325,13 +298,7 @@ async def get_conversation_detail(wa_id: str, request: Request):
 
 @router.get("/staff")
 async def list_staff(request: Request):
-    """List staff for the caller's business (tenant-scoped, P3.5a #4 follow-up).
-
-    Pre-P3.5a this endpoint mirrored the same bug that router's
-    _push_escalation_notification had — an unscoped state.list_staff()
-    returned every tenant's staff to any caller. Reviewers caught this
-    as a sibling leak to the four wa_id endpoints in commit 4.
-    """
+    """List staff for the caller's business."""
     await _require_api_auth(request)
     business_id = _resolve_business_id(request)
     staff_list = await state.list_staff(business_id=business_id)
@@ -426,20 +393,11 @@ async def oracle_query(req: OracleRequest, request: Request):
 
 @router.post("/reset")
 async def reset_conversation(req: ResetRequest, request: Request):
-    """Reset a customer's conversation within the caller's business.
-
-    Tenant-scoped (P3.5a #4): a valid API key for tenant A cannot wipe
-    tenant B's messages or customer state. Scoping the message-log
-    delete is the primary defense; the customer-state reset also
-    checks tenant ownership before touching the row.
-    """
+    """Reset a customer's conversation within the caller's business."""
     await _require_api_auth(request)
     _require_web_clone()
     business_id = _resolve_business_id(request)
-    # Scoped delete: rows for req.customer_id owned by OTHER tenants
-    # are left untouched.
     await delete_messages_for_wa_id(req.customer_id, business_id=business_id)
-    # Only reset the customer row if it actually belongs to this tenant.
     customer = await state.get_customer(req.customer_id)
     if customer and customer.business_id == business_id:
         await state.reset_customer_state(req.customer_id)

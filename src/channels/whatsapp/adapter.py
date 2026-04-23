@@ -379,14 +379,7 @@ class WhatsAppAdapter(ChannelAdapter):
             await legacy_mark_read(msg_id)
 
     async def download_media(self, media_id: str) -> tuple[bytes, str]:
-        """Fetch inbound media bytes from the Graph API under tenant creds.
-
-        Override of the base ChannelAdapter method. Wraps the module-level
-        helper in `_tenant_ctx()` so the Bearer token attached to both
-        Graph hops (metadata lookup + signed-URL fetch) is the one bound
-        to this adapter — not the module-level env fallback that Phase 3
-        left exposed on `whatsapp._access_token`.
-        """
+        """Fetch inbound media bytes from the Graph API under tenant creds."""
         with self._tenant_ctx():
             return await legacy_download_media(media_id)
 

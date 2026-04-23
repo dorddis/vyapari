@@ -115,9 +115,6 @@ class CustomerRecord(BaseModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     last_message_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     interested_cars: list[str] = Field(default_factory=list)
-    # Tenant this customer belongs to. Exposed from the Customer row so
-    # callers (web_api reset, agent tools) can enforce cross-tenant
-    # ownership checks without a second DB hop (P3.5a #4).
     business_id: str | None = None
 
 

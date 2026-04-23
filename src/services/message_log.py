@@ -127,15 +127,7 @@ async def fetch_messages_for_wa_id(
 ) -> list[dict]:
     """Fetch timeline messages for one wa_id, formatted for web UI.
 
-    `business_id` scopes the query when provided — required for
-    multi-tenant callers so a valid API key for tenant A can't read
-    tenant B's transcripts (P3.5a #4). `None` preserves pre-P3.5a
-    unscoped behavior for legacy single-tenant demo callers; all new
-    callers must pass it.
-
-    The anchor lookup (`since_id` -> created_at) also respects the
-    filter — a since_id rowid on tenant B is invisible to tenant A's
-    pagination.
+    Pass `business_id` to scope by tenant; None keeps legacy behavior.
     """
     session_factory = get_session_factory()
     async with session_factory() as session:
@@ -187,11 +179,7 @@ async def list_conversations_from_logs(
     *,
     business_id: str | None = None,
 ) -> list[dict]:
-    """Build owner-panel conversation summaries from message logs.
-
-    `business_id` scopes the query when provided — owner panels for
-    tenant B must not see tenant A's conversations (P3.5a #4).
-    """
+    """Build owner-panel conversation summaries. Scoped by business_id if given."""
     session_factory = get_session_factory()
     async with session_factory() as session:
         stmt = (
@@ -233,13 +221,7 @@ async def delete_messages_for_wa_id(
     *,
     business_id: str | None = None,
 ) -> int:
-    """Delete all logged messages for one customer; return deleted row count.
-
-    `business_id` scopes the delete when provided — pre-P3.5a a valid
-    API key for tenant A could POST /api/reset with a customer_id from
-    tenant B and wipe B's transcripts (P3.5a #4). `None` preserves the
-    legacy unscoped behavior for single-tenant demos only.
-    """
+    """Delete messages for one customer; return row count. Scoped if business_id given."""
     session_factory = get_session_factory()
     async with session_factory() as session:
         stmt = delete(MessageLog).where(MessageLog.wa_id == wa_id)

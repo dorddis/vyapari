@@ -1,15 +1,4 @@
-"""Multi-tenant media download isolation (P3.5a #1).
-
-Inbound voice/image for tenant B must fetch the Graph media bytes with
-B's access_token — not the env fallback `WHATSAPP_ACCESS_TOKEN` that
-pre-P3.5a callers silently picked up when `whatsapp.download_media` was
-invoked outside a `use_tenant(...)` context.
-
-The fix moves `download_media` onto `WhatsAppAdapter` so the call is
-always wrapped in `_tenant_ctx()`. These tests guard against regression
-by capturing the Bearer header on BOTH Graph hops (metadata + signed-URL
-fetch) and asserting it matches the adapter's bound token.
-"""
+"""Multi-tenant media download isolation."""
 
 from __future__ import annotations
 
@@ -26,18 +15,7 @@ import whatsapp
 
 
 class _GetCaptor:
-    """Capture two-hop GET calls.
-
-    whatsapp.download_media issues:
-      1. GET graph.facebook.com/{v}/{media_id}   -> JSON with `url`
-      2. GET <signed_url>                        -> raw file bytes
-
-    The captor records every GET's URL + Authorization header, and
-    returns a scripted response per hop (metadata JSON on hop 1, bytes on
-    hop 2). Request count is shared across hops because
-    httpx.AsyncClient re-uses the same client instance inside
-    download_media.
-    """
+    """Capture two-hop GET calls (metadata + signed-URL) with headers."""
 
     def __init__(self, *, file_bytes: bytes = b"\x00\x01", mime: str = "audio/ogg") -> None:
         self.calls: list[dict] = []
@@ -55,7 +33,6 @@ class _GetCaptor:
             "url": url,
             "auth": kw.get("headers", {}).get("Authorization", ""),
         })
-        # First hop returns metadata pointing to a trusted host.
         if len(self.calls) == 1:
             return _MetaResponse(self._mime)
         return _BytesResponse(self._file_bytes, self._mime)
@@ -71,7 +48,6 @@ class _MetaResponse:
         return None
 
     def json(self) -> dict:
-        # lookaside.fbsbx.com is whitelisted in whatsapp._MEDIA_HOST_ALLOWLIST_SUFFIXES.
         return {
             "url": "https://lookaside.fbsbx.com/signed/abc",
             "mime_type": self._mime,
@@ -91,9 +67,7 @@ class _BytesResponse:
 
 @pytest_asyncio.fixture
 async def two_tenants(monkeypatch):
-    """Mirror of test_multi_tenant.two_tenants — seeds two channels
-    with distinct access_tokens. Kept local to avoid importing a fixture
-    across test modules (pytest cross-file fixtures require conftest)."""
+    """Seed two tenants with distinct access_tokens."""
     monkeypatch.setenv("VYAPARI_ENCRYPTION_KEY", Fernet.generate_key().decode())
 
     import config
@@ -138,13 +112,9 @@ async def two_tenants(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_adapter_download_media_uses_tenant_token(two_tenants, monkeypatch) -> None:
-    """download_media on tenant A's adapter POSTs with TOKEN_ALPHA, never
-    the env fallback or tenant B's token. Mirror check for tenant B.
-    """
+    """download_media under each tenant's adapter carries ONLY that tenant's token."""
     import config
     monkeypatch.setattr(config, "CHANNEL_MODE", "whatsapp")
-    # Env token must differ from both tenant tokens so a fallback would be
-    # visible. The test asserts the env string never appears in any call.
     monkeypatch.setattr(whatsapp, "WHATSAPP_ACCESS_TOKEN", "ENV_TOKEN_SHOULD_NEVER_LEAK")
 
     adapter_a = await channel_base.get_tenant_channel(two_tenants["a_id"])
@@ -172,8 +142,6 @@ async def test_adapter_download_media_uses_tenant_token(two_tenants, monkeypatch
         assert "TOKEN_ALPHA" not in c["auth"]
         assert "ENV_TOKEN_SHOULD_NEVER_LEAK" not in c["auth"]
 
-    # First hop hits graph.facebook.com/{v}/{media_id}; second hop hits
-    # the signed CDN URL from the metadata response.
     assert "media-alpha" in caps[0].calls[0]["url"]
     assert "lookaside.fbsbx.com" in caps[0].calls[1]["url"]
     assert "media-beta" in caps[1].calls[0]["url"]
@@ -182,13 +150,7 @@ async def test_adapter_download_media_uses_tenant_token(two_tenants, monkeypatch
 
 @pytest.mark.asyncio
 async def test_download_media_without_tenant_context_falls_back(monkeypatch) -> None:
-    """Legacy single-tenant path: calling `whatsapp.download_media`
-    directly (outside a tenant context) still works by falling back to
-    the env token. Sole guard is that the env token is actually set.
-
-    This keeps the web_clone demo path working. Multi-tenant code must
-    NEVER use this path — that's what the adapter override fixes.
-    """
+    """Calling whatsapp.download_media directly (no tenant ctx) uses env token."""
     monkeypatch.setattr(whatsapp, "WHATSAPP_ACCESS_TOKEN", "LEGACY_ENV_TOKEN")
 
     cap = _GetCaptor()
@@ -200,31 +162,18 @@ async def test_download_media_without_tenant_context_falls_back(monkeypatch) -> 
 
 @pytest.mark.asyncio
 async def test_base_adapter_download_media_raises_not_implemented() -> None:
-    """Default ABC implementation raises so a mis-wired caller fails
-    loudly rather than silently picking up env credentials."""
+    """Default ABC raises NotImplementedError (no silent env fallback)."""
     from channels.web_clone.adapter import WebCloneAdapter
     adapter = WebCloneAdapter()
     with pytest.raises(NotImplementedError):
         await adapter.download_media("any-id")
 
 
-# ---------------------------------------------------------------------------
-# main.py:_process_and_reply voice web-upload branch (P3.5a #8 follow-up)
-# ---------------------------------------------------------------------------
-
 @pytest.mark.asyncio
 async def test_voice_web_upload_does_not_attach_bearer_to_untrusted_host(
     monkeypatch,
 ) -> None:
-    """The web-upload voice branch (main.py:~443) must NOT attach
-    `Bearer {env-token}` to arbitrary media_urls.
-
-    Pre-P3.5a-review the branch attached `Bearer {config.WHATSAPP_ACCESS_TOKEN}`
-    to ANY URL the IncomingMessage carried. If `media_url` ever became
-    user-controllable (or a future adapter change populated it with a
-    non-Meta URL), the Graph token leaked to the attacker-controlled host.
-    Fix gates the bearer behind `_is_trusted_media_host` + https scheme.
-    """
+    """Bearer only attaches to trusted Meta hosts on https."""
     from urllib.parse import urlparse
     from whatsapp import _is_trusted_media_host
 
