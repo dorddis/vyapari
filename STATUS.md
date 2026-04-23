@@ -1,8 +1,50 @@
 # Vyapari Agent - Live Status
 
-**Last Updated:** 2026-04-23 IST
-**Master State:** 257/257 tests passing. +31 commits local, not yet pushed.
-**Current Commit (local):** d51bde7
+**Last Updated:** 2026-04-23 IST (Phase 3.5 audit-remediation complete)
+**Master State:** 362/362 tests passing. +67 commits local, not yet pushed.
+**Current Commit (local):** 2862805
+
+---
+
+## Phase 3.5 — Audit Remediation Complete (Apr 23)
+
+Post-Phase-3, 5-agent `/review` pass surfaced 38 findings across logic,
+gaps, security, quality, and build. Each was verified against the live
+code (33 CONFIRMED, 1 REFUTED, 4 REFINED) and landed across 6 merged PRs
+on top of master:
+
+- **p3.5a (cross-tenant isolation, pilot blocker)** — media download
+  through tenant-bound adapter, templates.py tenant-aware, escalation
+  staff filter, wa_id endpoint scoping, webhook signature strict, +
+  6 review follow-ups including legacy-token spoof via X-Business-Id.
+- **p3.5b (immediate exploits)** — multipart filename path traversal,
+  duplicate Pydantic validator shadowing, Win32 reserved-name handling,
+  extension-preserving sanitizer.
+- **p3.5c (data correctness)** — tool_assign_lead persist (was
+  throwing away mutation), interested_cars list-ref bug, broadcast
+  and batch_followup noop stubs removed (raise NotImplementedError),
+  staging auth gate inversion, touch_inbound always records.
+- **p3.5d (security hardening)** — upload size+MIME gates on voice +
+  image endpoints, webhook 2MB body cap, media_id numeric regex,
+  onboard_tenant reads secrets from env (not argv/getpass), Graph
+  template-policy errors flip local row to PAUSED.
+- **p3.5e (ops robustness)** — /health/live + /health/ready with real
+  DB + encryption-key checks, relay advisory lock (cross-replica),
+  expiry loop per-session try, 429/5xx retry with jittered backoff.
+- **p3.5f (dead code + hygiene)** — delete message_store.py +
+  conversation.py + owner_agent.py + USE_OPENAI=False branches,
+  .env.example reconcile, explicit pins for cryptography +
+  python-multipart, api_keys throttle test.
+
+Plus a comment-tightening pass across PR-1 and PR-2 (-512 lines).
+
+Total: 36 commits, +105 tests (257 -> 362), 3 dead files deleted,
+grep fence clean.
+
+**67 commits on local master, not yet pushed to origin.**
+
+**Next:** Phase 4 (Docker + CI + Fly.io + Sentry + structlog + rate
+limiting + worker process), ~1 week eng. Starts in a fresh session.
 
 ---
 
@@ -16,8 +58,8 @@ hackathon prototype to a multi-tenant SaaS-ready backend:
 - **Phase 2/2.7:** 24h customer-service window + template catalog + outbound dispatcher.
 - **Phase 3/3.11:** Multi-tenancy — encrypted per-business WhatsApp creds, per-tenant adapter via ContextVar, per-business API keys, DB-backed cross-replica idempotency, tenant onboarding CLI, grep fence.
 
-**31 commits on local master, not yet pushed to origin.** Full trail in parent
-repo's STATUS.md and `sessions/ai-sales-agent/2026-04-23_vyapari-multi-tenant-rewrite.md`.
+**31 commits on local master (Phase 0-3) + 36 more commits (Phase 3.5) = 67 total local commits.** Full trail in parent
+repo's STATUS.md and session logs under `sessions/ai-sales-agent/`.
 
 Coordinate before pulling or pushing — the master branch has significant
 new code that team members will need to rebase onto. Ops scripts:
