@@ -30,6 +30,42 @@ log = logging.getLogger("vyapari.web_api")
 router = APIRouter(prefix="/api")
 
 
+_MAX_IMAGE_BYTES = 10 * 1024 * 1024
+_MAX_VOICE_BYTES = 10 * 1024 * 1024
+_ALLOWED_IMAGE_MIME = {
+    "image/jpeg", "image/png", "image/webp", "image/gif",
+    "image/heic", "image/heif", "application/pdf",
+}
+_ALLOWED_VOICE_MIME = {
+    "audio/ogg", "audio/mpeg", "audio/wav", "audio/x-wav",
+    "audio/mp4", "audio/webm", "audio/aac", "audio/m4a",
+    "audio/x-m4a", "audio/amr",
+}
+
+
+def _reject_oversize_body(request: Request, limit: int) -> None:
+    """Refuse before reading if Content-Length is advertised over limit."""
+    cl = request.headers.get("content-length")
+    if cl:
+        try:
+            declared = int(cl)
+        except ValueError:
+            return
+        if declared > limit:
+            raise HTTPException(status_code=413, detail="Payload too large")
+
+
+def _validate_mime(mime: str | None, allowed: set[str]) -> str:
+    """Return the MIME stripped of codec params; raise if not allowed."""
+    base = (mime or "").split(";")[0].strip().lower()
+    if base not in allowed:
+        raise HTTPException(
+            status_code=415,
+            detail=f"Unsupported media type: {mime!r}",
+        )
+    return base
+
+
 # ---------------------------------------------------------------------------
 # Request models
 # ---------------------------------------------------------------------------
@@ -445,10 +481,14 @@ async def voice_chat(
     Returns both the text reply and an audio reply (base64-encoded Opus).
     """
     await _require_api_auth(request)
+    _reject_oversize_body(request, _MAX_VOICE_BYTES)
     channel = _require_web_clone()
     from services.voice import generate_voice_reply, transcribe_voice_note
 
+    _validate_mime(file.content_type, _ALLOWED_VOICE_MIME)
     contents = await file.read()
+    if len(contents) > _MAX_VOICE_BYTES:
+        raise HTTPException(status_code=413, detail="Payload too large")
     mime = file.content_type or "audio/ogg"
 
     # Transcribe voice to text
@@ -507,10 +547,14 @@ async def upload_image_endpoint(
     so conversation replay can show the image.
     """
     await _require_api_auth(request)
+    _reject_oversize_body(request, _MAX_IMAGE_BYTES)
     channel = _require_web_clone()
     from services.image_store import upload_image as store_image
 
+    _validate_mime(file.content_type, _ALLOWED_IMAGE_MIME)
     contents = await file.read()
+    if len(contents) > _MAX_IMAGE_BYTES:
+        raise HTTPException(status_code=413, detail="Payload too large")
     mime = file.content_type or "image/jpeg"
 
     # Determine folder based on context

@@ -279,7 +279,18 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     5xx, Meta retries and eventually disables the subscription). Signature
     verification failures return 403 before we touch the payload.
     """
+    # Meta webhooks are tiny (<64KB). Reject absurd bodies before read
+    # to prevent an attacker exhausting memory on unauthenticated traffic.
+    cl = request.headers.get("content-length")
+    if cl:
+        try:
+            if int(cl) > 2 * 1024 * 1024:
+                return Response(content="Payload too large", status_code=413)
+        except ValueError:
+            pass
     raw_body = await request.body()
+    if len(raw_body) > 2 * 1024 * 1024:
+        return Response(content="Payload too large", status_code=413)
 
     phone_number_id = _extract_phone_number_id(raw_body)
     tenant_app_secret: str | None = None

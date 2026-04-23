@@ -6,6 +6,12 @@ Until Embedded Signup lands (Phase 5), tenants are added by ops:
    token, app secret, webhook verify token, and verification pin.
 3. Ops runs this CLI:
 
+    # Secrets come from env vars (NOT CLI flags — argv leaks via `ps`):
+    export VYAPARI_ONBOARD_ACCESS_TOKEN="EAAG..."
+    export VYAPARI_ONBOARD_APP_SECRET="abc123..."
+    export VYAPARI_ONBOARD_WEBHOOK_VERIFY_TOKEN="vt_hard_to_guess"  # optional
+    export VYAPARI_ONBOARD_VERIFICATION_PIN="1234"                  # optional
+
     python scripts/onboard_tenant.py \\
         --business-id acme-motors \\
         --name "Acme Motors" \\
@@ -14,11 +20,10 @@ Until Embedded Signup lands (Phase 5), tenants are added by ops:
         --waba-id 12345 \\
         --phone-number 15551234567 \\
         --phone-number-id 98765 \\
-        --access-token "EAAG..." \\
-        --app-secret "abc123..." \\
-        --webhook-verify-token "vt_hard_to_guess" \\
-        --verification-pin 1234 \\
         --description "Primary key for acme-motors"
+
+    # Unset env vars? The script will prompt via getpass for
+    # access-token and app-secret.
 
 4. Script mints an initial API key and prints it ONCE.
 """
@@ -27,11 +32,27 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
+import os
 import sys
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
+
+
+def _read_secret(env_var: str, prompt_label: str) -> str:
+    """Read a secret from env var; fall back to getpass prompt."""
+    value = os.environ.get(env_var, "").strip()
+    if value:
+        return value
+    if not sys.stdin.isatty():
+        print(
+            f"[FAIL] {env_var} not set and no interactive TTY to prompt.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    return getpass.getpass(f"{prompt_label}: ")
 
 
 async def main() -> int:
@@ -45,15 +66,22 @@ async def main() -> int:
     parser.add_argument("--waba-id", required=True)
     parser.add_argument("--phone-number", required=True)
     parser.add_argument("--phone-number-id", required=True)
-    parser.add_argument("--access-token", required=True)
-    parser.add_argument("--app-secret", required=True)
-    parser.add_argument("--webhook-verify-token", default="")
-    parser.add_argument("--verification-pin", default="")
     parser.add_argument("--description", default="Primary key")
     parser.add_argument("--source", default="manual", choices=["manual", "embedded_signup"])
     parser.add_argument("--skip-api-key", action="store_true",
                         help="Don't mint an initial API key")
+    # Secrets are NOT argparse flags — argv is visible in `ps` and shell
+    # history. Read from env vars (VYAPARI_ONBOARD_*) or prompt.
     args = parser.parse_args()
+
+    access_token = _read_secret("VYAPARI_ONBOARD_ACCESS_TOKEN", "Access token")
+    app_secret = _read_secret("VYAPARI_ONBOARD_APP_SECRET", "App secret")
+    webhook_verify_token = os.environ.get(
+        "VYAPARI_ONBOARD_WEBHOOK_VERIFY_TOKEN", ""
+    ).strip()
+    verification_pin = os.environ.get(
+        "VYAPARI_ONBOARD_VERIFICATION_PIN", ""
+    ).strip()
 
     from database import init_db, close_db
     from services.tenant_onboarding import (
@@ -86,10 +114,10 @@ async def main() -> int:
                 phone_number=args.phone_number,
                 phone_number_id=args.phone_number_id,
                 waba_id=args.waba_id,
-                access_token=args.access_token,
-                app_secret=args.app_secret,
-                webhook_verify_token=args.webhook_verify_token,
-                verification_pin=args.verification_pin,
+                access_token=access_token,
+                app_secret=app_secret,
+                webhook_verify_token=webhook_verify_token,
+                verification_pin=verification_pin,
                 source=args.source,
             )
             print(f"[PASS] Provisioned whatsapp_channel pni={args.phone_number_id!r}")
