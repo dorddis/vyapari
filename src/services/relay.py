@@ -7,7 +7,6 @@ Handles the owner/SDR <-> customer relay lifecycle:
 - Session summary generation
 """
 
-import asyncio
 from datetime import datetime, timezone
 
 import state
@@ -17,16 +16,7 @@ from models import (
     RelaySessionRecord,
 )
 
-_RELAY_FORWARD_LOCKS: dict[str, asyncio.Lock] = {}
 _DUPLICATE_RELAY_WINDOW_SECONDS = 2.0
-
-
-def _get_relay_forward_lock(conversation_id: str) -> asyncio.Lock:
-    lock = _RELAY_FORWARD_LOCKS.get(conversation_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _RELAY_FORWARD_LOCKS[conversation_id] = lock
-    return lock
 
 
 # ---------------------------------------------------------------------------
@@ -118,14 +108,14 @@ async def forward_to_customer(
     if not session:
         return None, "No active relay session."
 
-    lock = _get_relay_forward_lock(session.conversation_id)
-
     # Store message in conversation history
     staff = await state.get_staff(staff_wa_id)
     role = MessageRole.OWNER if staff and staff.role.value == "owner" else MessageRole.SDR
 
     normalized_text = text.strip()
-    async with lock:
+    # Postgres advisory lock — cross-replica. On SQLite falls back to an
+    # in-process asyncio.Lock, same semantics as before.
+    async with state._pg_advisory_lock(f"relay_fwd_{session.conversation_id}"):
         last_messages = await state.get_messages(session.conversation_id, limit=1)
         if last_messages:
             last = last_messages[-1]
