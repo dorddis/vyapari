@@ -596,6 +596,26 @@ async def set_conversation_state(
             await s.commit()
 
 
+async def assign_conversation(
+    customer_wa_id: str, staff_wa_id: str | None,
+) -> bool:
+    """Set `assigned_to` on the customer's latest conversation. Returns True on write."""
+    async with _session() as s:
+        result = await s.execute(
+            select(M.Conversation)
+            .where(M.Conversation.customer_wa_id == customer_wa_id)
+            .order_by(M.Conversation.started_at.desc())
+            .limit(1)
+        )
+        row = result.scalar_one_or_none()
+        if row is None:
+            return False
+        row.assigned_to = staff_wa_id
+        row.last_updated_at = _now()
+        await s.commit()
+        return True
+
+
 # ---------------------------------------------------------------------------
 # Messages
 # ---------------------------------------------------------------------------
