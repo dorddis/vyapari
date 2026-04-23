@@ -123,8 +123,8 @@ async def test_adapter_download_media_uses_tenant_token(two_tenants, monkeypatch
     caps = [_GetCaptor(file_bytes=b"alpha-bytes"), _GetCaptor(file_bytes=b"beta-bytes")]
     caps_iter = iter(caps)
     with patch("whatsapp.httpx.AsyncClient", lambda: next(caps_iter)):
-        bytes_a, mime_a = await adapter_a.download_media("media-alpha")
-        bytes_b, mime_b = await adapter_b.download_media("media-beta")
+        bytes_a, mime_a = await adapter_a.download_media("1001")
+        bytes_b, mime_b = await adapter_b.download_media("2002")
 
     assert bytes_a == b"alpha-bytes"
     assert bytes_b == b"beta-bytes"
@@ -142,9 +142,9 @@ async def test_adapter_download_media_uses_tenant_token(two_tenants, monkeypatch
         assert "TOKEN_ALPHA" not in c["auth"]
         assert "ENV_TOKEN_SHOULD_NEVER_LEAK" not in c["auth"]
 
-    assert "media-alpha" in caps[0].calls[0]["url"]
+    assert "/1001" in caps[0].calls[0]["url"]
     assert "lookaside.fbsbx.com" in caps[0].calls[1]["url"]
-    assert "media-beta" in caps[1].calls[0]["url"]
+    assert "/2002" in caps[1].calls[0]["url"]
     assert "lookaside.fbsbx.com" in caps[1].calls[1]["url"]
 
 
@@ -155,7 +155,7 @@ async def test_download_media_without_tenant_context_falls_back(monkeypatch) -> 
 
     cap = _GetCaptor()
     with patch("whatsapp.httpx.AsyncClient", lambda: cap):
-        await whatsapp.download_media("legacy-id")
+        await whatsapp.download_media("9876")
 
     assert all("LEGACY_ENV_TOKEN" in c["auth"] for c in cap.calls)
 
