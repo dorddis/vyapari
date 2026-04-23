@@ -99,6 +99,33 @@ def test_sanitize_preserves_reasonable_extensions() -> None:
         assert out.endswith(ext), f"Lost {ext} -> {out}"
 
 
+@pytest.mark.parametrize("name", [
+    "CON", "PRN", "AUX", "NUL",
+    "COM1", "LPT1", "COM9", "LPT9",
+    "con.jpg", "Nul.txt", "AUX.pdf",  # case-insensitive stem match
+])
+def test_sanitize_handles_windows_reserved_names(name) -> None:
+    """Win32 rejects reserved names even with an extension. Prefix with
+    `_` so the file actually writes under Windows dev environments."""
+    out = _sanitize_path_segment(name)
+    # The resulting stem (pre-extension) must NOT be a reserved name.
+    from pathlib import PurePath
+    stem = PurePath(out).stem
+    assert stem.upper() not in {
+        "CON", "PRN", "AUX", "NUL",
+        "COM1","COM2","COM3","COM4","COM5","COM6","COM7","COM8","COM9",
+        "LPT1","LPT2","LPT3","LPT4","LPT5","LPT6","LPT7","LPT8","LPT9",
+    }, f"{name!r} -> {out!r} still resolves to reserved stem {stem!r}"
+
+
+def test_sanitize_strips_trailing_dot_and_space() -> None:
+    """Win32 silently trims trailing `.` and space, enabling collisions
+    between `report.` and `report`. Strip them explicitly."""
+    assert _sanitize_path_segment("report.") == "report"
+    assert _sanitize_path_segment("photo  ") == "photo"
+    assert _sanitize_path_segment("doc.pdf.") == "doc.pdf"
+
+
 def test_sanitize_does_not_preserve_absurd_extension() -> None:
     """A 30-char "extension" on an over-cap filename is not a real
     extension — plain truncation is preferable to preserving it, because

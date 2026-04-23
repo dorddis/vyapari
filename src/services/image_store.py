@@ -24,6 +24,16 @@ log = logging.getLogger("vyapari.services.image_store")
 # deeply-nested user-supplied prefixes.
 _SAFE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]")
 
+# Windows reserved filename stems. Even with an extension (e.g.
+# `CON.jpg`) the Win32 API rejects the name — `write_bytes` raises
+# PermissionError. Linux-first hosting makes this reliability-only,
+# but dev environments on Windows hit the same code path in tests.
+_WIN_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+
 
 def _sanitize_path_segment(segment: str, *, max_len: int = 64) -> str:
     """Return a filesystem-safe version of a user-supplied path segment.
@@ -44,13 +54,22 @@ def _sanitize_path_segment(segment: str, *, max_len: int = 64) -> str:
     """
     if not segment:
         return "upload"
-    cleaned = _SAFE_NAME_RE.sub("_", segment)
-    # Strip leading dots so an attacker can't force hidden files / dot
-    # traversal via repeated `.` (`..` becomes `__` above, but `.foo`
-    # would survive — disallow).
-    cleaned = cleaned.lstrip(".")
-    if not cleaned:
+    # Strip leading/trailing dots and spaces BEFORE the regex — otherwise
+    # a trailing space becomes `_` and survives rstrip. Leading dots
+    # prevent hidden-file / dot-traversal attacks (`.ssh`, `..`); trailing
+    # dots and spaces prevent Win32 silent-trim collisions (`report.` vs
+    # `report`).
+    segment = segment.strip(". ")
+    if not segment:
         return "upload"
+    cleaned = _SAFE_NAME_RE.sub("_", segment)
+    # Windows reserved-name guard. Compare stem (pre-extension) case-
+    # insensitively. If it matches, prefix an underscore so the name
+    # survives as a real file on Windows.
+    dot_idx = cleaned.rfind(".")
+    stem = cleaned[:dot_idx] if dot_idx > 0 else cleaned
+    if stem.upper() in _WIN_RESERVED:
+        cleaned = "_" + cleaned
     if len(cleaned) <= max_len:
         return cleaned
     # Extension-preserving truncation. `.` is in the allow-list, so a
