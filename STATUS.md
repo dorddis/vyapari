@@ -1,8 +1,33 @@
 # Vyapari Agent - Live Status
 
-**Last Updated:** 2026-04-16 22:00 IST
-**Master State:** 53/53 tests passing, stable
-**Current Commit:** 6f37b61
+**Last Updated:** 2026-04-23 IST
+**Master State:** 257/257 tests passing. +31 commits local, not yet pushed.
+**Current Commit (local):** d51bde7
+
+---
+
+## Phase 0-3 Rewrite Complete (Apr 22-23)
+
+Sid ran a systematic GTM rewrite over 2 days, taking Vyapari from the
+hackathon prototype to a multi-tenant SaaS-ready backend:
+
+- **Phase 0/0.5:** Unbroke WhatsApp adapter + webhook hardening.
+- **Phase 1/1.8:** Full Cloud API surface (27 outbound + 11 inbound shapes, pywa fixtures ported, 101 new tests).
+- **Phase 2/2.7:** 24h customer-service window + template catalog + outbound dispatcher.
+- **Phase 3/3.11:** Multi-tenancy — encrypted per-business WhatsApp creds, per-tenant adapter via ContextVar, per-business API keys, DB-backed cross-replica idempotency, tenant onboarding CLI, grep fence.
+
+**31 commits on local master, not yet pushed to origin.** Full trail in parent
+repo's STATUS.md and `sessions/ai-sales-agent/2026-04-23_vyapari-multi-tenant-rewrite.md`.
+
+Coordinate before pulling or pushing — the master branch has significant
+new code that team members will need to rebase onto. Ops scripts:
+
+- `scripts/onboard_tenant.py` — provision a new business + encrypted WA channel + initial API key
+- `scripts/mint_api_key.py` — issue per-business REST auth
+- `scripts/register_starter_templates.py` / `scripts/sync_templates.py` — Meta templates
+- `scripts/check_no_tenant_hardcodes.py` — grep fence (wire into pre-commit)
+
+**Next:** Phase 4 (Docker + CI + Fly.io + Sentry + rate limiting) — starting in a fresh session.
 
 ---
 
