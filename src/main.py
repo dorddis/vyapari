@@ -318,7 +318,31 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
     # messages from arbitrary phone numbers.
     verify_signature = config.WHATSAPP_ENABLED or config.CHANNEL_MODE == "whatsapp"
     if verify_signature:
-        effective_secret = tenant_app_secret or config.META_APP_SECRET
+        # P3.5a #5: once `tenant_business_id` resolves, we MUST verify
+        # against THAT tenant's app_secret. The pre-P3.5a `tenant_app_secret
+        # or config.META_APP_SECRET` fallback let a shared-Meta-app ISV
+        # setup silently accept a body signed with the shared secret but
+        # forged to claim a sibling tenant's phone_number_id — the handler
+        # had already set `tenant_business_id` from the pre-verification
+        # pnid peek, so the spoofed message landed in the wrong queue.
+        #
+        # Policy:
+        # - Tenant resolved + secret loaded -> use tenant secret. No fallback.
+        # - Tenant resolved + secret unavailable (decrypt failed, empty) -> 403.
+        # - Tenant NOT resolved (unknown pnid, missing field) -> fall back to
+        #   global META_APP_SECRET. Preserves legacy single-tenant demo.
+        if tenant_business_id is not None:
+            if not tenant_app_secret:
+                log.warning(
+                    "Tenant %s resolved but app_secret unavailable; "
+                    "refusing webhook (no fallback to META_APP_SECRET)",
+                    _safe_log_field(tenant_business_id),
+                )
+                return Response(content="Forbidden", status_code=403)
+            effective_secret = tenant_app_secret
+        else:
+            effective_secret = config.META_APP_SECRET
+
         if not effective_secret:
             log.error(
                 "No signing secret for webhook (phone_number_id=%s, "
