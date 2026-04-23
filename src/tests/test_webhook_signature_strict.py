@@ -199,6 +199,69 @@ async def test_tenant_with_unloadable_secret_returns_403(
     assert resp.status_code == 403, resp.text
 
 
+@pytest_asyncio.fixture
+async def tenant_a_channel_with_empty_secret():
+    """Seed a tenant channel whose app_secret is explicitly an empty
+    string (not a decrypt failure). Regression for gap review P1 #3 —
+    the `if not tenant_app_secret:` guard at main.py:335 also fires on
+    "" but the branch had zero dedicated coverage.
+    """
+    import config
+    from database import get_session_factory
+    from db_models import ApiKey, WhatsAppChannel
+    from services import business_config as bc
+    from services.secrets import encrypt_secrets
+
+    bc.invalidate_cache()
+    async with get_session_factory()() as s:
+        await s.execute(delete(ApiKey))
+        await s.execute(delete(WhatsAppChannel))
+        s.add(WhatsAppChannel(
+            business_id=config.DEFAULT_BUSINESS_ID,
+            phone_number="919900000011",
+            phone_number_id="pni-empty-secret",
+            waba_id="waba-a",
+            provider_config=encrypt_secrets({
+                "access_token": "a-token",
+                "app_secret": "",  # <-- empty, NOT missing
+                "webhook_verify_token": "",
+                "verification_pin": "",
+            }),
+        ))
+        await s.commit()
+
+    yield
+
+    async with get_session_factory()() as s:
+        await s.execute(delete(ApiKey))
+        await s.execute(delete(WhatsAppChannel))
+        await s.commit()
+    bc.invalidate_cache()
+
+
+@pytest.mark.asyncio
+async def test_resolved_tenant_with_empty_app_secret_returns_403(
+    whatsapp_app, tenant_a_channel_with_empty_secret,
+) -> None:
+    """ctx loads successfully but app_secret is the empty string. The
+    handler must 403 — not fall through to the global secret. This
+    guards against a regression where `if not tenant_app_secret:` at
+    main.py:335 gets flipped to `if tenant_app_secret is None:`
+    (which would treat "" as valid and silently accept the global).
+    """
+    body = _build_payload("pni-empty-secret")
+    transport = httpx.ASGITransport(app=whatsapp_app.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://t") as http:
+        resp = await http.post(
+            "/webhook", content=body,
+            headers={
+                "Content-Type": "application/json",
+                "X-Hub-Signature-256": _sign(body, GLOBAL_SECRET),
+            },
+        )
+    assert resp.status_code == 403, resp.text
+
+
 @pytest.mark.asyncio
 async def test_unknown_pnid_falls_back_to_global(whatsapp_app) -> None:
     """Legacy single-tenant preservation: if the pnid has no channel row

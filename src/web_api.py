@@ -88,18 +88,24 @@ def _require_web_clone() -> WebCloneAdapter:
 def _resolve_business_id(request: Request) -> str:
     """Resolve the tenant for a REST API request.
 
-    Priority (Phase 3.7):
+    Priority:
     1. If `request.state.business_id` was set by `_require_api_auth` from
-       an API key lookup, use that — the key binds to a specific tenant.
-    2. Explicit `X-Business-Id` header (dev / ops override).
+       an API-key lookup OR a legacy-token success, use that — the key
+       (or legacy path) binds to a specific tenant.
+    2. Explicit `X-Business-Id` header — DEV / STAGING ONLY. In production
+       the header is ignored outright. Pre-P3.5a this header was honored
+       unconditionally; a holder of the shared legacy `API_AUTH_TOKEN`
+       (every dev laptop) could add `X-Business-Id: <victim>` and drive
+       the tenant-scoped endpoints against another tenant's data.
     3. Single-tenant bootstrap default (web demo, tests).
     """
     auth_bid = getattr(request.state, "business_id", None)
     if auth_bid:
         return auth_bid
-    header_bid = request.headers.get("X-Business-Id")
-    if header_bid:
-        return header_bid.strip()
+    if config.APP_ENV.lower() != "production":
+        header_bid = request.headers.get("X-Business-Id")
+        if header_bid:
+            return header_bid.strip()
     from services.business_config import default_business_id
     return default_business_id()
 
@@ -142,8 +148,13 @@ async def _require_api_auth(request: Request) -> None:
         request.state.business_id = biz
         return
 
-    # Legacy fallback: shared single-tenant token.
+    # Legacy fallback: shared single-tenant token. Bind to the bootstrap
+    # business explicitly — pre-P3.5a this path returned without setting
+    # request.state.business_id, which let a legacy-token holder spoof
+    # any tenant by adding an X-Business-Id header (review: security #1).
     if config.API_AUTH_TOKEN and hmac.compare_digest(provided, config.API_AUTH_TOKEN):
+        from services.business_config import default_business_id as _default_bid
+        request.state.business_id = _default_bid()
         return
 
     raise HTTPException(status_code=401, detail="Unauthorized")
@@ -320,9 +331,16 @@ async def get_conversation_detail(wa_id: str, request: Request):
 
 @router.get("/staff")
 async def list_staff(request: Request):
-    """List all staff members."""
+    """List staff for the caller's business (tenant-scoped, P3.5a #4 follow-up).
+
+    Pre-P3.5a this endpoint mirrored the same bug that router's
+    _push_escalation_notification had — an unscoped state.list_staff()
+    returned every tenant's staff to any caller. Reviewers caught this
+    as a sibling leak to the four wa_id endpoints in commit 4.
+    """
     await _require_api_auth(request)
-    staff_list = await state.list_staff()
+    business_id = _resolve_business_id(request)
+    staff_list = await state.list_staff(business_id=business_id)
     return {
         "staff": [
             {

@@ -308,8 +308,19 @@ async def handle_webhook(request: Request, background_tasks: BackgroundTasks):
                     # Resolver found the phone_number_id but the channel
                     # row is stale / orphaned. Fall through to global key.
                     tenant_app_secret = None
-        except Exception:
-            log.exception("Tenant resolution failed; falling back to global secret")
+        except Exception as exc:
+            # Resolver or decrypt raised; tenant_business_id may still be
+            # set from the pnid lookup. We intentionally drop the traceback
+            # (pre-P3.5a used log.exception, which chained full exception
+            # args including any ciphertext fragments the decrypt layer
+            # surfaced). If tenant_business_id is set, the guard at L334
+            # forces 403 — it does NOT fall back to the global secret
+            # despite the old log message claiming so.
+            log.warning(
+                "Tenant resolution failed for pnid=%s: %s",
+                _safe_log_field(phone_number_id),
+                type(exc).__name__,
+            )
 
     # Signature verification fires for any whatsapp-mode deployment, not just
     # when WHATSAPP_ENABLED=true — the two flags used to be independent and
@@ -435,14 +446,31 @@ async def _process_and_reply(msg: IncomingMessage):
                     log.info(f"Downloading voice note {msg.media_id} for {msg.wa_id}...")
                     audio_bytes, mime_type = await channel.download_media(msg.media_id)
                 else:
-                    # media_url already set (e.g. web upload)
+                    # media_url already set (e.g. web-clone upload pointing at
+                    # our own Supabase/local storage, or a pre-signed Meta URL).
+                    # P3.5a #8 follow-up: only attach the Graph bearer token when
+                    # the URL is on Meta's media allow-list AND https — previously
+                    # this branch attached `Bearer {env-token}` to ANY URL, which
+                    # was (a) useless for local web-clone URLs and (b) an env-token
+                    # leak / SSRF surface if media_url ever became user-controllable.
                     import httpx
+                    from urllib.parse import urlparse
+                    from whatsapp import _is_trusted_media_host
                     log.info(f"Downloading voice note from {msg.media_url[:60]}...")
+                    parsed = urlparse(msg.media_url)
+                    attach_bearer = (
+                        parsed.scheme == "https"
+                        and _is_trusted_media_host(msg.media_url)
+                        and bool(config.WHATSAPP_ACCESS_TOKEN)
+                    )
                     async with httpx.AsyncClient() as http:
                         headers = {}
-                        if config.WHATSAPP_ACCESS_TOKEN:
+                        if attach_bearer:
                             headers["Authorization"] = f"Bearer {config.WHATSAPP_ACCESS_TOKEN}"
-                        resp = await http.get(msg.media_url, headers=headers, timeout=30)
+                        resp = await http.get(
+                            msg.media_url, headers=headers, timeout=30,
+                            follow_redirects=False,
+                        )
                         resp.raise_for_status()
                         audio_bytes = resp.content
                         mime_type = resp.headers.get("content-type", "audio/ogg")

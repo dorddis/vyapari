@@ -238,3 +238,144 @@ async def test_reset_endpoint_respects_tenant_ownership(
     # leaving a WebCloneAdapter cached here breaks test_webhook_integration
     # (its fixture reloads config/main but not channels.base).
     channel_base.reset_channel()
+
+
+# ---------------------------------------------------------------------------
+# Follow-ups from PR-1 review agents
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_staff_endpoint_is_tenant_scoped(monkeypatch) -> None:
+    """GET /api/staff must only return the caller's business's staff.
+
+    Regression for gap review P1 #1 — commit 4 scoped 4 wa_id endpoints
+    but missed this sibling endpoint using the same unscoped list_staff().
+    """
+    import config
+    from database import get_session_factory
+    from db_models import Business, Staff, WhatsAppChannel
+    from models import StaffRole, StaffStatus
+
+    a_id = "staffep-tenant-a"
+    b_id = "staffep-tenant-b"
+    owner_a = "919110000030"
+    owner_b = "919220000040"
+
+    async with get_session_factory()() as s:
+        await s.execute(delete(WhatsAppChannel))
+        await s.execute(delete(Staff).where(Staff.wa_id.in_([owner_a, owner_b])))
+        await s.execute(delete(Business).where(Business.id.in_([a_id, b_id])))
+        s.add(Business(id=a_id, name="A", type="", vertical="",
+                       owner_phone=owner_a))
+        s.add(Business(id=b_id, name="B", type="", vertical="",
+                       owner_phone=owner_b))
+        await s.commit()
+    await state.add_staff(wa_id=owner_a, name="Alice",
+                          role=StaffRole.OWNER, status=StaffStatus.ACTIVE,
+                          business_id=a_id)
+    await state.add_staff(wa_id=owner_b, name="Bob",
+                          role=StaffRole.OWNER, status=StaffStatus.ACTIVE,
+                          business_id=b_id)
+
+    monkeypatch.setattr(config, "CHANNEL_MODE", "web_clone")
+    from channels import base as channel_base
+    channel_base.reset_channel()
+    async def _noop_auth(_req):
+        return None
+    monkeypatch.setattr("web_api._require_api_auth", _noop_auth)
+
+    from web_api import list_staff as list_staff_endpoint
+
+    class _FakeStateA:
+        business_id = a_id
+    class _FakeRequestA:
+        state = _FakeStateA()
+        headers: dict = {}
+
+    class _FakeStateB:
+        business_id = b_id
+    class _FakeRequestB:
+        state = _FakeStateB()
+        headers: dict = {}
+
+    resp_a = await list_staff_endpoint(_FakeRequestA())
+    resp_b = await list_staff_endpoint(_FakeRequestB())
+
+    wa_ids_a = {s["wa_id"] for s in resp_a["staff"]}
+    wa_ids_b = {s["wa_id"] for s in resp_b["staff"]}
+    assert owner_a in wa_ids_a and owner_b not in wa_ids_a, (
+        f"Tenant A must not see tenant B's staff; got {wa_ids_a}"
+    )
+    assert owner_b in wa_ids_b and owner_a not in wa_ids_b, (
+        f"Tenant B must not see tenant A's staff; got {wa_ids_b}"
+    )
+
+    # Cleanup
+    async with get_session_factory()() as s:
+        await s.execute(delete(Staff).where(Staff.wa_id.in_([owner_a, owner_b])))
+        await s.execute(delete(Business).where(Business.id.in_([a_id, b_id])))
+        await s.commit()
+    channel_base.reset_channel()
+
+
+@pytest.mark.asyncio
+async def test_legacy_token_binds_to_default_business_id(monkeypatch) -> None:
+    """A request authenticated via the shared legacy API_AUTH_TOKEN
+    must be bound to DEFAULT_BUSINESS_ID explicitly — NOT fall through
+    to the unvalidated X-Business-Id header.
+
+    Pre-P3.5a review: legacy-token holders (every dev laptop) could
+    add X-Business-Id: <victim> and drive all scoped endpoints
+    against any tenant. Regression for security review P1 #1.
+    """
+    import config
+    from fastapi import HTTPException
+
+    from web_api import _require_api_auth, _resolve_business_id
+
+    monkeypatch.setattr(config, "API_AUTH_TOKEN", "legacy-shared-token")
+    monkeypatch.setattr(config, "APP_ENV", "production")
+
+    class _FakeReqState:
+        business_id = None
+
+    class _FakeRequest:
+        def __init__(self, authorization: str, x_business_id: str | None) -> None:
+            self.state = _FakeReqState()
+            self.headers: dict = {"Authorization": authorization}
+            if x_business_id is not None:
+                self.headers["X-Business-Id"] = x_business_id
+
+    # Legacy-token request that ALSO tries to spoof X-Business-Id.
+    spoof_req = _FakeRequest(
+        authorization="Bearer legacy-shared-token",
+        x_business_id="victim-tenant",
+    )
+    await _require_api_auth(spoof_req)
+    # request.state.business_id MUST be set to default, not spoofed.
+    assert spoof_req.state.business_id == config.DEFAULT_BUSINESS_ID, (
+        "Legacy token success must bind to default_business_id explicitly"
+    )
+    # _resolve_business_id must return default (priority #1 wins over header).
+    assert _resolve_business_id(spoof_req) == config.DEFAULT_BUSINESS_ID
+
+
+@pytest.mark.asyncio
+async def test_x_business_id_header_ignored_in_production(monkeypatch) -> None:
+    """Production must not honor the dev convenience header at all.
+
+    Defense-in-depth: even if a future caller hits the resolve helper
+    without an auth-bound business_id, production rejects the header.
+    """
+    import config
+    from web_api import _resolve_business_id
+
+    monkeypatch.setattr(config, "APP_ENV", "production")
+
+    class _Req:
+        class state: business_id = None
+        headers = {"X-Business-Id": "attacker-tenant"}
+
+    bid = _resolve_business_id(_Req())
+    assert bid == config.DEFAULT_BUSINESS_ID
+    assert bid != "attacker-tenant"

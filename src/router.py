@@ -171,13 +171,28 @@ async def handle_customer_agent(msg: IncomingMessage, conv_state: ConversationSt
 
 
 async def _push_escalation_notification(
-    customer_wa_id: str, response, *, business_id: str = "",
+    customer_wa_id: str, response, *, business_id: str,
 ) -> None:
-    """Send escalation notification to the assigned staff or owner."""
+    """Send escalation notification to the assigned staff or owner.
+
+    `business_id` is REQUIRED — the empty-string default that existed
+    pre-P3.5a review let future callers silently bypass the tenant
+    scoping fix (#3) with no test failure. Callers must thread it from
+    the IncomingMessage; an empty value skips notification rather than
+    re-exposing the unscoped list_staff() behavior.
+    """
     from channels.base import get_tenant_channel
 
+    if not business_id:
+        log.warning(
+            "Escalation notification for %s skipped: no business_id. "
+            "Refusing to page a tenant owner under unscoped list_staff.",
+            customer_wa_id,
+        )
+        return
+
     # Find who to notify: assigned staff, or owner.
-    # Staff lookup MUST be tenant-scoped — the unscoped list_staff() call
+    # Staff lookup is tenant-scoped — the unscoped list_staff() call
     # pre-P3.5a picked "the first owner we see" globally, paging tenant
     # A's owner for tenant B's escalation (#3).
     conv = await state.get_conversation(customer_wa_id)
@@ -185,9 +200,7 @@ async def _push_escalation_notification(
     if conv and conv.assigned_to:
         notify_wa_id = conv.assigned_to
     else:
-        staff_list = await state.list_staff(
-            business_id=business_id or None,
-        )
+        staff_list = await state.list_staff(business_id=business_id)
         for s in staff_list:
             if s.role.value == "owner":
                 notify_wa_id = s.wa_id

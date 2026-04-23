@@ -206,3 +206,62 @@ async def test_base_adapter_download_media_raises_not_implemented() -> None:
     adapter = WebCloneAdapter()
     with pytest.raises(NotImplementedError):
         await adapter.download_media("any-id")
+
+
+# ---------------------------------------------------------------------------
+# main.py:_process_and_reply voice web-upload branch (P3.5a #8 follow-up)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_voice_web_upload_does_not_attach_bearer_to_untrusted_host(
+    monkeypatch,
+) -> None:
+    """The web-upload voice branch (main.py:~443) must NOT attach
+    `Bearer {env-token}` to arbitrary media_urls.
+
+    Pre-P3.5a-review the branch attached `Bearer {config.WHATSAPP_ACCESS_TOKEN}`
+    to ANY URL the IncomingMessage carried. If `media_url` ever became
+    user-controllable (or a future adapter change populated it with a
+    non-Meta URL), the Graph token leaked to the attacker-controlled host.
+    Fix gates the bearer behind `_is_trusted_media_host` + https scheme.
+    """
+    from urllib.parse import urlparse
+    from whatsapp import _is_trusted_media_host
+
+    monkeypatch.setattr(whatsapp, "WHATSAPP_ACCESS_TOKEN", "ENV_TOKEN_MUST_NOT_LEAK")
+    import config
+    monkeypatch.setattr(config, "WHATSAPP_ACCESS_TOKEN", "ENV_TOKEN_MUST_NOT_LEAK")
+
+    # Case 1: attacker-controlled URL -> bearer must NOT be attached.
+    url_evil = "https://evil.example.com/steal-my-token"
+    assert not _is_trusted_media_host(url_evil)
+    parsed_evil = urlparse(url_evil)
+    attach_evil = (
+        parsed_evil.scheme == "https"
+        and _is_trusted_media_host(url_evil)
+        and bool(config.WHATSAPP_ACCESS_TOKEN)
+    )
+    assert attach_evil is False, (
+        "Bearer must not be attached to an untrusted media_url"
+    )
+
+    # Case 2: http (not https) Meta URL -> scheme guard blocks too.
+    url_http = "http://lookaside.fbsbx.com/signed/abc"
+    assert _is_trusted_media_host(url_http)
+    parsed_http = urlparse(url_http)
+    attach_http = (
+        parsed_http.scheme == "https"
+        and _is_trusted_media_host(url_http)
+        and bool(config.WHATSAPP_ACCESS_TOKEN)
+    )
+    assert attach_http is False, "http scheme must be rejected even on allow-list"
+
+    # Case 3: https + Meta CDN -> bearer attached (legitimate path).
+    url_ok = "https://lookaside.fbsbx.com/signed/abc"
+    parsed_ok = urlparse(url_ok)
+    attach_ok = (
+        parsed_ok.scheme == "https"
+        and _is_trusted_media_host(url_ok)
+        and bool(config.WHATSAPP_ACCESS_TOKEN)
+    )
+    assert attach_ok is True

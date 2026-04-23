@@ -186,3 +186,38 @@ async def test_escalation_with_no_staff_logs_and_skips(
     )
 
     assert sent == [], f"Should not fall through to other tenants, got {sent}"
+
+
+@pytest.mark.asyncio
+async def test_escalation_refuses_to_send_without_business_id(
+    two_tenants_with_owners, monkeypatch,
+) -> None:
+    """Calling _push_escalation_notification with an empty business_id
+    must skip silently rather than fall through to the unscoped
+    list_staff() path. Regression for logic review P2 #3 — pre-review
+    the function had `business_id: str = ""` as a default and was a
+    latent foot-gun for any future caller that forgot the kwarg.
+    """
+    from router import _push_escalation_notification
+
+    sent: list[tuple[str, str]] = []
+
+    class _CaptureChannel:
+        async def send_text(self, to: str, text: str) -> None:
+            sent.append((to, text))
+
+    async def _fake_get_tenant_channel(business_id: str):
+        return _CaptureChannel()
+
+    monkeypatch.setattr(
+        "channels.base.get_tenant_channel", _fake_get_tenant_channel,
+    )
+
+    response = SimpleNamespace(escalation_summary="test")
+    await _push_escalation_notification(
+        "919000000001", response, business_id="",
+    )
+    assert sent == [], (
+        "Empty business_id must skip — not re-expose the unscoped "
+        "list_staff() pre-P3.5a behavior"
+    )
