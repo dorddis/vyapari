@@ -35,6 +35,12 @@ def _sanitize_path_segment(segment: str, *, max_len: int = 64) -> str:
 
     Collapses consecutive separators and strips leading dots so names
     like `..`, `.hidden`, or `///passwd` can't resolve upwards or hide.
+
+    Preserves the final extension when truncating at `max_len` so an
+    iPhone/Android gallery filename like
+    `IMG_20241015_really_long_device_export_filename.jpg` (easily
+    60+ chars) doesn't silently lose `.jpg` and serve as
+    application/octet-stream to the UI.
     """
     if not segment:
         return "upload"
@@ -43,7 +49,23 @@ def _sanitize_path_segment(segment: str, *, max_len: int = 64) -> str:
     # traversal via repeated `.` (`..` becomes `__` above, but `.foo`
     # would survive — disallow).
     cleaned = cleaned.lstrip(".")
-    return cleaned[:max_len] or "upload"
+    if not cleaned:
+        return "upload"
+    if len(cleaned) <= max_len:
+        return cleaned
+    # Extension-preserving truncation. `.` is in the allow-list, so a
+    # dot in `cleaned` is a genuine separator, not a sanitized byte.
+    # Only treat the LAST dot as the extension boundary and only if the
+    # suffix is short enough to leave room for the stem (reject things
+    # like `foo.abcdefghij...50chars` being "preserved" — that's not a
+    # real extension, strip it).
+    dot = cleaned.rfind(".")
+    if 0 < dot < len(cleaned) - 1:
+        suffix = cleaned[dot:]
+        if len(suffix) <= 16:
+            stem = cleaned[:dot]
+            return (stem[: max_len - len(suffix)] + suffix)
+    return cleaned[:max_len]
 
 # Supabase Storage config
 _SUPABASE_URL = os.getenv("SUPABASE_URL", "")
@@ -139,8 +161,9 @@ def _upload_local(image_bytes: bytes, path: str) -> str:
     _ensure_local_dir()
     base = _LOCAL_UPLOAD_DIR.resolve()
     full_path = (_LOCAL_UPLOAD_DIR / path).resolve()
-    # `is_relative_to` is strict — both symlinks and `..` components are
-    # evaluated. Raises if `full_path` escapes base.
+    # `relative_to` raises ValueError if `full_path` escapes base.
+    # Both sides go through `.resolve()` so any `..` or symlink in the
+    # composed path is evaluated before the comparison.
     try:
         full_path.relative_to(base)
     except ValueError:

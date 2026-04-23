@@ -82,6 +82,35 @@ def test_sanitize_path_segment_caps_length():
     assert len(out) <= 64
 
 
+def test_sanitize_preserves_extension_under_cap() -> None:
+    """Mobile-export filenames like `IMG_..._long_export_filename.jpg`
+    can exceed the 64-char cap. A naive `[:64]` would strip `.jpg`
+    and the UI would render as application/octet-stream. Preserve the
+    suffix."""
+    long_with_ext = "a" * 80 + ".jpg"
+    out = _sanitize_path_segment(long_with_ext)
+    assert len(out) <= 64
+    assert out.endswith(".jpg"), f"Extension lost in {out!r}"
+
+
+def test_sanitize_preserves_reasonable_extensions() -> None:
+    for ext in (".jpg", ".jpeg", ".png", ".webp", ".heic", ".pdf"):
+        out = _sanitize_path_segment("x" * 90 + ext)
+        assert out.endswith(ext), f"Lost {ext} -> {out}"
+
+
+def test_sanitize_does_not_preserve_absurd_extension() -> None:
+    """A 30-char "extension" on an over-cap filename is not a real
+    extension — plain truncation is preferable to preserving it, because
+    a 30-char suffix would leave only 34 chars for the stem and likely
+    lose meaningful content."""
+    # 50 + 1 + 30 = 81 chars total, above the 64 cap.
+    out = _sanitize_path_segment("a" * 50 + "." + "x" * 30)
+    assert len(out) <= 64
+    # Must NOT end with the 30-char "ext" — our heuristic caps suffix at 16.
+    assert not out.endswith("." + "x" * 30)
+
+
 # ---------------------------------------------------------------------------
 # upload_image (public API) — traversal neutralized in both layers
 # ---------------------------------------------------------------------------
